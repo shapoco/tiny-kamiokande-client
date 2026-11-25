@@ -58,6 +58,7 @@ build_esp m5tab5
 } > "${dest_dir}/BUILD_INFO.txt"
 
 cp README.md README.ja.md "${dest_dir}/"
+cp -r image "${dest_dir}/"
 
 pushd releases > /dev/null
   zip -r "${release_name}.zip" "${release_name}"
