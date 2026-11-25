@@ -57,7 +57,7 @@ build_esp m5tab5
   echo "       m5tab5/upload.sh [PORT] [BAUD]     # Tab5"
 } > "${dest_dir}/BUILD_INFO.txt"
 
-cp README.md "${dest_dir}/"
+cp README.md README.ja.md "${dest_dir}/"
 
 pushd releases > /dev/null
   zip -r "${release_name}.zip" "${release_name}"
