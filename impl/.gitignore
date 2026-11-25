@@ -1,0 +1,7 @@
+# ビルド生成物
+host/build/
+*/build/
+*/managed_components/
+*/sdkconfig
+*/sdkconfig.old
+*/dependencies.lock

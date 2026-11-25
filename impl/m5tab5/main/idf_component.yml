@@ -1,0 +1,8 @@
+dependencies:
+  # panel_ppa.cpp が M5GFX の内部 (Panel_DSI) に触れるのでバージョンを固定する
+  m5stack/m5gfx: "0.2.25"
+  m5stack/m5unified: "0.2.18"
+  # WiFi は SDIO でつながった ESP32-C6 が担う。esp_wifi の API を esp_wifi_remote が esp_hosted 経由で C6 に転送する
+  espressif/esp_wifi_remote: "^1.6"
+  espressif/esp_hosted: "^3.0"
+  idf: ">=5.5"

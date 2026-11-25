@@ -1,0 +1,5 @@
+dependencies:
+  # ボードの起動 (電源、パネル、タッチ) と帯の SPI 転送に使う。Tab5 と合わせて固定する
+  m5stack/m5gfx: "0.2.25"
+  m5stack/m5unified: "0.2.18"
+  idf: ">=5.5"
