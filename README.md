@@ -9,6 +9,8 @@ It fetches data that the Tiny Kamiokande server has extracted from the event dis
 [Super-Kamiokande Realtime Monitor](https://www-sk.icrr.u-tokyo.ac.jp/realtimemonitor/), maps it onto a 3D model of the detector,
 and shows it together with the particle tracks estimated by the server.
 
+A web version for PCs and smartphones is available at https://www.shapoco.net/tiny-kamiokande/.
+
 The display is not guaranteed to be scientifically accurate (both the tracks and the orientation are estimated from the images and public information).
 
 ## Supported devices

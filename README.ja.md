@@ -8,6 +8,8 @@ Tiny Kamiokande の MCU 向けクライアント。
 [Super-Kamiokande Realtime Monitor](https://www-sk.icrr.u-tokyo.ac.jp/realtimemonitor/) が公開しているイベントディスプレイ画像を
 Tiny Kamiokande のサーバが解析したデータを取得し、検出器の 3D モデルに貼り付けて、サーバが推定した粒子の軌跡とともに表示します。
 
+PC やスマートフォン向けの Web 版は https://www.shapoco.net/tiny-kamiokande/ で公開しています。
+
 表示は学術的な正しさを保証しません (軌跡、方位ともに画像と公開情報からの推定です)。
 
 ## 対応機種
