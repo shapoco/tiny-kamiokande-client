@@ -1,6 +1,8 @@
-# tiny-kamiokande-client
+# Tiny Kamiokande Client
 
 English | [日本語](README.ja.md)
+
+![](./image/cover.jpg)
 
 An MCU client for Tiny Kamiokande.
 It fetches data that the Tiny Kamiokande server has extracted from the event display images published by the

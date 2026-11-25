@@ -1,6 +1,8 @@
-# tiny-kamiokande-client
+# Tiny Kamiokande クライアント
 
 [English](README.md) | 日本語
+
+![](./image/cover.jpg)
 
 Tiny Kamiokande の MCU 向けクライアント。
 [Super-Kamiokande Realtime Monitor](https://www-sk.icrr.u-tokyo.ac.jp/realtimemonitor/) が公開しているイベントディスプレイ画像を
