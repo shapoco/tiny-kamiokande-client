@@ -1,2 +1,25 @@
+# Build outputs
+build/
+test/build/
+.pio/
+
+# ESP-IDF
+managed_components/
+sdkconfig
+sdkconfig.old
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / tool state
+.vscode/
+.claude/settings.local.json
+
+# Temporary files
 tmp.*
 tmp.*/
+*.log
+
+# Releases
+releases/

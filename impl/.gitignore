@@ -1,6 +1,7 @@
 # ビルド生成物
 host/build/
 */build/
+*/build-release/
 */managed_components/
 */sdkconfig
 */sdkconfig.old

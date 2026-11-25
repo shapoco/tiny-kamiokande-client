@@ -40,6 +40,17 @@ impl/m5cores3/run.sh /dev/ttyACM1      # ビルドと書き込み
 impl/m5cores3/monitor.sh               # シリアルログ
 ```
 
+### リリース
+
+`./make_release.sh` で `version.txt` の版のリリースを作る。
+
+- CoreS3 と Tab5 を `impl/<機種>/build-release/` に `sdkconfig.defaults` だけからクリーンビルドする
+  (手元の `build/`、`sdkconfig`、デモモードの指定は使わない。ログは `impl/<機種>/build-release.log`)。
+- `idf.py merge-bin` で 0x0 に書く 1 ファイルにまとめ、`releases/tiny-kamiokande-client_v<版>/<機種>/tiny_kamiokande_<機種>.bin` に置く。
+  同じディレクトリに `assets/release/<機種>/` の中身 (esptool で書き込む `upload.sh [PORT] [BAUD]`) をコピーする。
+  最上位に README.md と `BUILD_INFO.txt` (版、このリポジトリと ShapoGFX のコミット、書き込み方) を置き、zip にする。
+- Tab5 には C6 の更新用ファーム (5.6) を埋め込む。`cp_firmware/tab5_c6_hosted.bin` が無ければ先に `build_cp.sh` で作る。
+
 ## 2. サーバ API
 
 クライアントが使う範囲だけを書く。URL は `TKAPP_API_URL` (`config.hpp`)。
