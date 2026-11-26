@@ -17,6 +17,7 @@
 #include "tkapp/detector.hpp"
 #include "tkapp/event.hpp"
 #include "tkapp/eventlog.hpp"
+#include "tkapp/history.hpp"
 
 namespace tkapp {
 
@@ -46,15 +47,20 @@ class Platform {
   // 接続数 (api.php の clients)。負なら表示しない
   virtual int viewerCount() { return -1; }
   virtual void log(const char *msg) { (void)msg; }
+  // 表示の時刻 (サーバ時刻 - 表示の遅れ、UNIX ミリ秒)。履歴の時間軸の右端。分からなければ負
+  virtual int64_t displayTimeMs() { return -1; }
+  // 時刻 ms (HistoryItem::ms) の履歴の内容を取得する。届いたら App::showHistoryEvent()、失敗したら historyFailed()。
+  // 前の要求が終わっていなければ置き換える
+  virtual void requestHistory(int64_t ms) { (void)ms; }
 };
 
 enum class Key : uint8_t { LEFT, RIGHT, UP, DOWN, A, B, COUNT };
 constexpr int MAX_POINTERS = 2;
 
-// 履歴の実体。HISTORY_MAX 個の EventRecord をプラットフォームが確保する (PSRAM 可)
+// イベントの実体。RECORD_SLOTS 個の EventRecord をプラットフォームが確保する (PSRAM 可)
 struct Buffers {
-  EventRecord *history = nullptr;      // PSRAM 可
-  int historyCapacity = 0;
+  EventRecord *records = nullptr;      // PSRAM 可
+  int recordCapacity = 0;
   uint16_t *texturePixels = nullptr;   // TEXTURE_PIXELS 個。内蔵 RAM に置く
 };
 
@@ -106,9 +112,18 @@ class App {
   void keyUp(Key k);
 
   // --- データ (描画スレッド) ---
-  // 推定の終わったイベントを履歴に積む。LIVE なら表示の切り替えを予定する
+  // LIVE のイベント (表示の時刻が来たもの) を受け取る。LIVE モードなら表示を切り替える
   void pushEvent(const EventRecord &rec);
-  int historyCount() const { return historyCount_; }
+  // 履歴の一覧が更新されたら呼ぶ (時間軸に写す)
+  void updateHistory(const HistoryList &list);
+  // Platform::requestHistory(ms) で取得した履歴の内容。LIVE モードを離れて即座に再生する
+  void showHistoryEvent(const EventRecord &rec, int64_t ms);
+  void historyFailed(int64_t ms);
+  bool live() const { return live_; }
+  // 時間軸の点 (HistoryItem::ms) を選ぶ (タップと同じ)、LIVE に戻る (LIVE ボタンと同じ)。シリアルのコマンドなどから
+  void selectHistory(int64_t ms);
+  void goLive();
+  const HistoryList &timeline() const { return timeline_; }
   // サーバのイベントの記録が更新されたら呼ぶ。画面最下部の画像を作り直す
   void updateLog(const EventLog &log);
   int logCols() const { return logCols_; }
@@ -177,16 +192,21 @@ class App {
   // --- UI (ui.cpp) ---
   struct Button {
     int x, y, w, h;
-    int kind;  // 0: LIVE、1..: 履歴 (index + 1)、-1: WiFi アイコン
-    int history;
+    int kind;  // BUTTON_*
   };
+  static constexpr int BUTTON_WIFI = -1, BUTTON_LIVE = 0, BUTTON_TIMELINE = 1;
   void layoutButtons();
   int hitButton(int x, int y) const;  // ボタンの添字、無ければ -1
-  void buttonAction(int index);
+  void buttonAction(int index, int x);
   void drawOverlay(g2::Graphics2D &g, int y);
   void drawMainUi(g2::Graphics2D &g);
   void drawWifiIcon(g2::Graphics2D &g, int x, int y, int size, WifiState st);
   void drawViewerCount(g2::Graphics2D &g, int count);
+  void drawTimeline(g2::Graphics2D &g);
+  // 時間軸の x 座標 → 最も近い点の添字 (UI_HIST_HIT_PX 以内)。無ければ -1
+  int hitTimeline(int x) const;
+  int timelineX(int64_t ms, int64_t nowMs) const;
+  void drawVersion(g2::Graphics2D &g);
   void drawWifiMenu(g2::Graphics2D &g);
   void drawKeyboard(g2::Graphics2D &g);
   void uiPointerDown(int x, int y);
@@ -199,16 +219,17 @@ class App {
   int iconSize() const;  // WiFi アイコンと進捗のドーナツの大きさ
   int uiFontH() const;
 
-  // --- 履歴 ---
+  // --- イベントの実体の枠 ---
   HistoryEntry *findEntry(uint32_t id);
-  HistoryEntry *newestEntry();
-  void trimHistory();
-  void selectEntry(HistoryEntry *entry, bool live);
-  uint32_t kindColor(const HistoryEntry &e) const;
+  // 受け取ったイベントを入れる枠。表示中 (切り替え中の前の分を含む) と最新の LIVE は使わない。
+  // forLive なら、空きが無いとき最新の LIVE の枠 (表示していなければ) を上書きしてよい
+  HistoryEntry *allocEntry(bool forLive);
 
   // --- 状態 ---
   int w_ = 0, h_ = 0;
-  int viewH_ = 0;  // 3D 表示の高さ (最下部の記録の分を除く)
+  int viewH_ = 0;  // 3D 表示の高さ (最下部の記録と履歴の帯の分を除く)
+  int histY_ = 0, histH_ = 0;      // 履歴の帯
+  int axisX0_ = 0, axisX1_ = 0;    // 時間軸の左端と右端
 
   // イベントの記録の画像 (logCols_ × LOG_SLOTS_PER_HOUR。logScale_ 倍に拡大して (logX_, viewH_) に描く)
   int logCols_ = 0, logScale_ = 1, logX_ = 0, logH_ = 0;
@@ -228,14 +249,19 @@ class App {
   float fpsAccum_ = 0;
   int fpsFrames_ = 0;
 
-  // 履歴
+  // イベントの実体の枠
   Buffers buffers_;
-  HistoryEntry history_[HISTORY_MAX];  // 新しい順
-  int historyCount_ = 0;
+  HistoryEntry records_[RECORD_SLOTS];
   uint32_t nextId_ = 1;
   bool live_ = true;
   uint32_t displayedId_ = 0;   // 表示中 (切り替え中を含む)
+  uint32_t cellsId_ = 0;       // 検出器のテクスチャがセルを読んでいるもの (フェードアウト中は前の表示)
+  uint32_t latestLiveId_ = 0;  // 最新の LIVE (履歴から LIVE に戻るときに再生する)
   uint32_t pendingLiveId_ = 0; // LIVE で次に表示する予定
+  // 履歴の時間軸
+  HistoryList timeline_;
+  int64_t requestedMs_ = 0;    // 取得を頼んだ履歴 (0 なら無し)
+  int64_t selectedMs_ = 0;     // 表示中の履歴 (LIVE なら 0)
   float shownSec_ = 0;         // 表示を始めてからの時間
 
   // カメラ
@@ -324,7 +350,7 @@ class App {
 
   // UI
   Screen screen_ = Screen::MAIN;
-  Button buttons_[HISTORY_MAX + 2];
+  Button buttons_[3];
   int buttonCount_ = 0;
   int pressedButton_ = -1;
   WifiConfig draft_;

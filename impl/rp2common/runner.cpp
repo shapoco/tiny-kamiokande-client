@@ -62,6 +62,8 @@ class Rp2Platform : public tkapp::Platform {
   tkapp::WifiState wifiState() override { return demo_ ? tkapp::WifiState::UNAVAILABLE : netState(); }
   bool fetching() override { return pipelineFetching(); }
   int viewerCount() override { return pipelineViewerCount(time_us_64()); }
+  int64_t displayTimeMs() override { return pipelineDisplayTimeMs(time_us_64()); }
+  void requestHistory(int64_t ms) override { pipelineRequestHistory(ms); }
   void log(const char *msg) override { std::printf("app: %s\n", msg); }
   bool demo_ = false;
 };
@@ -69,7 +71,7 @@ class Rp2Platform : public tkapp::Platform {
 // 大きなものは静的に置く (リンク時に RAM の使用量が分かる。ヒープは mbedTLS が使う)
 Rp2Platform g_platform;
 tkapp::App g_app;
-tkapp::EventRecord g_history[tkapp::HISTORY_MAX];
+tkapp::EventRecord g_records[tkapp::RECORD_SLOTS];
 alignas(8) uint16_t g_texture[tkapp::TEXTURE_PIXELS];
 alignas(8) uint8_t g_arena3d[ARENA_BYTES];
 // 2D の描画 (文字、UI) はコアごとに別のコンテキストと作業領域を使う
@@ -167,10 +169,13 @@ uint32_t heapFree() {
   return (uint32_t)(&__StackLimit - (char *)sbrk(0)) + (uint32_t)mi.fordblks;
 }
 
+// ヒープが一度も届いていない量 (sbrk は戻らないので、これまでの最大使用量の目安。断片化の分は含まない)
+uint32_t heapUntouched() { return (uint32_t)(&__StackLimit - (char *)sbrk(0)); }
+
 void logMemory() {
-  std::printf("memory: app %u, history %u, textures %u, 3D arena %u, 2D arenas %u, pipeline %u, core1 stack %u; "
+  std::printf("memory: app %u, records %u, textures %u, 3D arena %u, 2D arenas %u, pipeline %u, core1 stack %u; "
               "heap free %lu\n",
-              (unsigned)sizeof(tkapp::App), (unsigned)sizeof g_history, (unsigned)sizeof g_texture,
+              (unsigned)sizeof(tkapp::App), (unsigned)sizeof g_records, (unsigned)sizeof g_texture,
               (unsigned)sizeof g_arena3d, (unsigned)sizeof g_gfxArena, (unsigned)pipelineMemoryBytes(),
               (unsigned)sizeof g_core1Stack, (unsigned long)heapFree());
 }
@@ -188,11 +193,11 @@ void logStats(Stats &s, uint64_t now) {
   const tkapp::Stats &as = g_app.stats();
   const PipelineStatus &ps = pipelineStatus();
   std::printf("%d.%d fps, us/frame: poll %llu, advance %llu, scene %llu, draw core0 %llu core1 %llu, "
-              "wait core1 %llu, wait panel %llu; tris %u, span peak %u, tri bytes %u; heap free %lu; "
+              "wait core1 %llu, wait panel %llu; tris %u, span peak %u, tri bytes %u; heap free %lu untouched %lu; "
               "fetch %lu ok %lu same %lu err %lu, last %lu ms\n",
               fps10 / 10, fps10 % 10, s.pollUs / n, s.advanceUs / n, s.sceneUs / n, s.draw0Us / n, s.draw1Us / n,
               s.joinUs / n, s.drainUs / n, (unsigned)as.triCount, (unsigned)as.spanPeak, (unsigned)as.triBytes,
-              (unsigned long)heapFree(), (unsigned long)ps.fetches, (unsigned long)ps.ok,
+              (unsigned long)heapFree(), (unsigned long)heapUntouched(), (unsigned long)ps.fetches, (unsigned long)ps.ok,
               (unsigned long)ps.unchanged, (unsigned long)ps.errors, (unsigned long)ps.lastFetchMs);
   s = Stats();
   s.since = now;
@@ -264,8 +269,8 @@ void run(Board &board, const Config &cfg) {
   if (!panelOk) halt("strip buffers did not fit");
 
   tkapp::Buffers buffers;
-  buffers.history = g_history;
-  buffers.historyCapacity = tkapp::HISTORY_MAX;
+  buffers.records = g_records;
+  buffers.recordCapacity = tkapp::RECORD_SLOTS;
   buffers.texturePixels = g_texture;
   g_app.setMultiTouch(cfg.multiTouch);
   if (!g_app.init(g_w, g_h, buffers, &g_platform, g_arena3d, ARENA_BYTES, RENDER_CORES)) halt("app init failed");
@@ -292,6 +297,21 @@ void run(Board &board, const Config &cfg) {
   hooks.apply = applyConfig;
   hooks.current = []() -> const tkapp::WifiConfig & { return g_wifi; };
   hooks.status = logMemory;
+  hooks.history = [](int index) {
+    const tkapp::HistoryList &list = g_app.timeline();
+    if (index >= 0) {
+      if (index < list.count()) g_app.selectHistory(list.at(index).ms);
+      else std::printf("no such item\n");
+      return;
+    }
+    const int64_t now = g_platform.displayTimeMs();
+    std::printf("history (display time %lld, %s):\n", (long long)now, g_app.live() ? "live" : "history");
+    for (int i = 0; i < list.count(); i++) {
+      std::printf("  %d: %lld kind %d, %lld s ago\n", i, (long long)list.at(i).ms, list.at(i).kind,
+                  (long long)(now - list.at(i).ms) / 1000);
+    }
+  };
+  hooks.live = []() { g_app.goLive(); };
   consoleStart(hooks);
   logMemory();
 
@@ -300,7 +320,7 @@ void run(Board &board, const Config &cfg) {
   Stats stats;
   stats.since = start;
   int cur = 0;
-  uint32_t logGen = 0;
+  uint32_t logGen = 0, histGen = 0;
   rp2common::diagStartWatchdog();
   for (;;) {
     rp2common::diagFeedWatchdog();
@@ -315,6 +335,20 @@ void run(Board &board, const Config &cfg) {
     }
     // イベントの記録が更新されていたら最下部の画像を作り直す
     pipelineVisitLog(logGen, [](const tkapp::EventLog &log, void *) { g_app.updateLog(log); }, nullptr);
+    pipelineVisitHistory(histGen, [](const tkapp::HistoryList &list, void *) { g_app.updateHistory(list); }, nullptr);
+    // 頼んだ履歴の内容が届いていれば再生する
+    {
+      tkapp::EventRecord *rec;
+      int64_t ms;
+      if (pipelineTakeHistory(&rec, &ms)) {
+        if (rec) {
+          g_app.showHistoryEvent(*rec, ms);
+          pipelineRelease(rec);
+        } else {
+          g_app.historyFailed(ms);
+        }
+      }
+    }
     consolePoll();
     board.poll(g_app);
     const uint64_t tp = time_us_64();

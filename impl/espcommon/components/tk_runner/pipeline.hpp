@@ -8,6 +8,7 @@
 
 #include "tkapp/event.hpp"
 #include "tkapp/eventlog.hpp"
+#include "tkapp/history.hpp"
 
 namespace tkrunner {
 
@@ -24,6 +25,17 @@ void pipelineRelease(tkapp::EventRecord *rec);
 
 // イベントの記録 (api.php の log) が gen より新しければ、ロックしたまま fn に渡して gen を更新する。描画側が呼ぶ
 bool pipelineVisitLog(uint32_t &gen, void (*fn)(const tkapp::EventLog &log, void *user), void *user);
+
+// 履歴の一覧 (api.php の hist) が gen より新しければ、ロックしたまま fn に渡して gen を更新する。描画側が呼ぶ
+bool pipelineVisitHistory(uint32_t &gen, void (*fn)(const tkapp::HistoryList &list, void *user), void *user);
+
+// 時刻 ms の履歴の内容 (?at=) の取得を頼む。前の頼みが始まっていなければ置き換える
+void pipelineRequestHistory(int64_t ms);
+// 履歴の取得の結果があれば true。*rec が nullptr なら失敗。*rec は App に渡した後 pipelineRelease() で返す
+bool pipelineTakeHistory(tkapp::EventRecord **rec, int64_t *ms);
+
+// 表示の時刻 (サーバ時刻 - 表示の遅れ、UNIX ms)。分からなければ -1
+int64_t pipelineDisplayTimeMs();
 
 // api.php から取得している最中か (デモでは常に false)
 

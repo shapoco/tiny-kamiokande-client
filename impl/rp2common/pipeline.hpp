@@ -10,6 +10,7 @@
 
 #include "tkapp/event.hpp"
 #include "tkapp/eventlog.hpp"
+#include "tkapp/history.hpp"
 
 namespace tkrp2 {
 
@@ -27,6 +28,17 @@ void pipelineRelease(tkapp::EventRecord *rec);
 
 // イベントの記録が gen より新しければ fn に渡して gen を更新する
 bool pipelineVisitLog(uint32_t &gen, void (*fn)(const tkapp::EventLog &log, void *user), void *user);
+
+// 履歴の一覧 (api.php の hist) が gen より新しければ fn に渡して gen を更新する
+bool pipelineVisitHistory(uint32_t &gen, void (*fn)(const tkapp::HistoryList &list, void *user), void *user);
+
+// 時刻 ms の履歴の内容 (?at=) の取得を頼む。取得中の定期の取得が済んでから始める。前の頼みが始まっていなければ置き換える
+void pipelineRequestHistory(int64_t ms);
+// 履歴の取得の結果があれば true。*rec が nullptr なら失敗。*rec は App に渡した後 pipelineRelease() で返す
+bool pipelineTakeHistory(tkapp::EventRecord **rec, int64_t *ms);
+
+// 表示の時刻 (サーバ時刻 - 表示の遅れ、UNIX ms)。分からなければ -1
+int64_t pipelineDisplayTimeMs(uint64_t nowUs);
 
 bool pipelineFetching();
 // 最後に受け取った接続数。不明か 60 秒以上更新がなければ -1

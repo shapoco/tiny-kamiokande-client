@@ -48,6 +48,18 @@ constexpr size_t URL_MAX = 160;
 volatile int g_viewers = -1;          // 最後に受け取った接続数 (api.php の clients)。-1 なら不明
 volatile int64_t g_viewersAtUs = 0;   // それを受け取った時刻
 constexpr int64_t VIEWERS_STALE_US = 60 * 1000000LL;  // これより古い接続数は出さない (通信が途絶えたとき)
+// 履歴の一覧 (時間軸)。記録と同じく g_logMutex で排他し、描画側が pipelineVisitHistory で読む
+tkapp::HistoryList *g_hist = nullptr;
+volatile uint32_t g_histGen = 0;
+// 描画側から頼まれた履歴の時刻 (0 なら無し。g_histMux で排他) と、取得の結果 (描画側が pipelineTakeHistory で受け取る)
+portMUX_TYPE g_histMux = portMUX_INITIALIZER_UNLOCKED;
+int64_t g_histReqMs = 0;
+struct HistResult {
+  tkapp::EventRecord *rec;  // nullptr なら失敗
+  int64_t ms;
+};
+QueueHandle_t g_histQ = nullptr;
+TaskHandle_t g_task = nullptr;
 
 // 表示待ちのキューの時刻の判定 (tkapp/sync.hpp)。パイプラインのタスク (core1) が標本を入れ、
 // pipelinePoll (core0) が判定するので g_syncMux で排他する
@@ -60,6 +72,41 @@ void noteServerTime(int64_t serverTimeMs, const NetTiming &t) {
   taskENTER_CRITICAL(&g_syncMux);
   g_sync.noteServerTime(serverTimeMs, t.sentUs, t.headersUs);
   taskEXIT_CRITICAL(&g_syncMux);
+}
+
+int64_t serverNowMs() {
+  taskENTER_CRITICAL(&g_syncMux);
+  const int64_t ms = g_sync.serverNowMs(esp_timer_get_time());
+  taskEXIT_CRITICAL(&g_syncMux);
+  return ms;
+}
+
+// 頼まれた履歴を 1 件取得して描画側に渡す (失敗も渡す)
+void fetchHistory(int64_t ms) {
+  tkapp::EventRecord *rec = nullptr;
+  bool ok = false;
+  if (!g_cfg.demo && netState() == tkapp::WifiState::CONNECTED && xQueueReceive(g_freeQ, &rec, 0) == pdTRUE && rec) {
+    char url[URL_MAX];
+    std::snprintf(url, sizeof url, "%s&at=%lld", TKAPP_API_URL, (long long)ms);
+    int http = 0;
+    g_fetching = true;
+    const int n = netFetch(url, g_fetchBuf, FETCH_BUF_BYTES, &http);
+    g_fetching = false;
+    if (n > 0) {
+      tkapp::ApiInfo info;
+      const tkapp::ApiStatus st = tkapp::decodeApiResponse(g_fetchBuf, (size_t)n, *rec, info);
+      ok = st == tkapp::ApiStatus::OK || st == tkapp::ApiStatus::FEW_LIT;
+      if (!ok) std::printf("pipeline: history %lld not available (status %d, code %d)\n", (long long)ms, (int)st, info.statusCode);
+    } else {
+      std::printf("pipeline: history %lld fetch failed (http %d)\n", (long long)ms, http);
+    }
+  }
+  if (!ok && rec) {
+    xQueueSend(g_freeQ, &rec, 0);
+    rec = nullptr;
+  }
+  HistResult r = {rec, ms};
+  if (xQueueSend(g_histQ, &r, 0) != pdTRUE && rec) xQueueSend(g_freeQ, &rec, 0);
 }
 
 // 表示の時刻が来たか。デモ、サーバ時刻が分からない (古いサーバ) ときはすぐ表示する
@@ -88,9 +135,18 @@ void pipelineTask(void *) {
   int sampleIndex = 0;
   int64_t nextFetchUs = esp_timer_get_time();
   for (;;) {
+    taskENTER_CRITICAL(&g_histMux);
+    const int64_t histReq = g_histReqMs;
+    g_histReqMs = 0;
+    taskEXIT_CRITICAL(&g_histMux);
+    if (histReq) {
+      fetchHistory(histReq);
+      continue;
+    }
     const int64_t now = esp_timer_get_time();
     if (now < nextFetchUs) {
-      vTaskDelay(pdMS_TO_TICKS((nextFetchUs - now) / 1000 + 1));
+      // 履歴を頼まれたら (pipelineRequestHistory の通知) 起きる
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((nextFetchUs - now) / 1000 + 1));
       continue;
     }
     nextFetchUs = now + (int64_t)(g_cfg.intervalSec * 1e6f);
@@ -111,7 +167,16 @@ void pipelineTask(void *) {
     } else if (netState() == tkapp::WifiState::CONNECTED) {
       // 記録は前回の応答の現在の枠から後ろだけを要求する (初回は直近 80 時間分)
       char url[URL_MAX];
-      std::snprintf(url, sizeof url, "%s&log=%lld", TKAPP_API_URL, (long long)g_log->requestFrom());
+      // 履歴の一覧も前回の最後の時刻から後ろだけ (初回はサーバ時刻が分かってから、直近 1 時間分)
+      xSemaphoreTake(g_logMutex, portMAX_DELAY);
+      const int64_t histFrom = g_hist->requestFrom(serverNowMs());
+      xSemaphoreGive(g_logMutex);
+      if (histFrom >= 0) {
+        std::snprintf(url, sizeof url, "%s&log=%lld&hist=%lld", TKAPP_API_URL, (long long)g_log->requestFrom(),
+                      (long long)histFrom);
+      } else {
+        std::snprintf(url, sizeof url, "%s&log=%lld", TKAPP_API_URL, (long long)g_log->requestFrom());
+      }
       g_fetching = true;
       const int n = netFetch(url, g_fetchBuf, FETCH_BUF_BYTES, &g_status.lastHttpStatus, &timing);
       g_fetching = false;
@@ -136,6 +201,13 @@ void pipelineTask(void *) {
         xSemaphoreTake(g_logMutex, portMAX_DELAY);
         g_log->merge(info.logNow, info.logRows, info.logBytes);
         g_logGen = g_logGen + 1;
+        xSemaphoreGive(g_logMutex);
+      }
+      if (st != tkapp::ApiStatus::MALFORMED && info.history.present) {
+        const int64_t nowMs = serverNowMs();
+        xSemaphoreTake(g_logMutex, portMAX_DELAY);
+        g_hist->merge(info.history, nowMs);
+        g_histGen = g_histGen + 1;
         xSemaphoreGive(g_logMutex);
       }
       if (info.clients >= 0) {
@@ -177,13 +249,16 @@ bool pipelineStart(const PipelineConfig &cfg) {
   g_slots = (tkapp::EventRecord *)allocPreferSpiram(sizeof(tkapp::EventRecord) * SLOTS, "slots");
   if (!cfg.demo) g_fetchBuf = (uint8_t *)allocPreferSpiram(FETCH_BUF_BYTES, "fetch buffer");
   void *logMem = allocPreferSpiram(sizeof(tkapp::EventLog), "event log");
+  void *histMem = allocPreferSpiram(sizeof(tkapp::HistoryList), "history list");
+  g_histQ = xQueueCreate(2, sizeof(HistResult));
   g_logMutex = xSemaphoreCreateMutex();
-  if (!g_slots || (!cfg.demo && !g_fetchBuf) || !logMem || !g_logMutex) {
+  if (!g_slots || (!cfg.demo && !g_fetchBuf) || !logMem || !histMem || !g_histQ || !g_logMutex) {
     std::printf("pipeline: allocation failed (slots %d, fetch %d, log %d)\n", g_slots != nullptr, g_fetchBuf != nullptr,
                 logMem != nullptr);
     return false;
   }
   g_log = new (logMem) tkapp::EventLog();
+  g_hist = new (histMem) tkapp::HistoryList();
 
   g_freeQ = xQueueCreate(SLOTS, sizeof(tkapp::EventRecord *));
   g_readyQ = xQueueCreate(SLOTS, sizeof(tkapp::EventRecord *));
@@ -199,8 +274,9 @@ bool pipelineStart(const PipelineConfig &cfg) {
   static StaticTask_t tcb;
   void *stack = allocPreferSpiram(STACK_BYTES, "task stack");
   if (!stack) return false;
-  if (!xTaskCreateStaticPinnedToCore(pipelineTask, "tk_pipe", STACK_BYTES, nullptr, cfg.priority, (StackType_t *)stack,
-                                     &tcb, cfg.core)) {
+  g_task = xTaskCreateStaticPinnedToCore(pipelineTask, "tk_pipe", STACK_BYTES, nullptr, cfg.priority,
+                                         (StackType_t *)stack, &tcb, cfg.core);
+  if (!g_task) {
     std::printf("pipeline: task not created\n");
     return false;
   }
@@ -227,6 +303,38 @@ bool pipelineVisitLog(uint32_t &gen, void (*fn)(const tkapp::EventLog &log, void
   fn(*g_log, user);
   xSemaphoreGive(g_logMutex);
   return true;
+}
+
+bool pipelineVisitHistory(uint32_t &gen, void (*fn)(const tkapp::HistoryList &list, void *user), void *user) {
+  if (!g_hist || !g_logMutex || gen == g_histGen) return false;
+  xSemaphoreTake(g_logMutex, portMAX_DELAY);
+  gen = g_histGen;
+  fn(*g_hist, user);
+  xSemaphoreGive(g_logMutex);
+  return true;
+}
+
+void pipelineRequestHistory(int64_t ms) {
+  taskENTER_CRITICAL(&g_histMux);
+  g_histReqMs = ms;
+  taskEXIT_CRITICAL(&g_histMux);
+  if (g_task) xTaskNotifyGive(g_task);
+}
+
+bool pipelineTakeHistory(tkapp::EventRecord **rec, int64_t *ms) {
+  HistResult r;
+  if (!g_histQ || xQueueReceive(g_histQ, &r, 0) != pdTRUE) return false;
+  *rec = r.rec;
+  *ms = r.ms;
+  return true;
+}
+
+int64_t pipelineDisplayTimeMs() {
+  if (g_cfg.demo) return -1;
+  taskENTER_CRITICAL(&g_syncMux);
+  const int64_t ms = g_sync.displayTimeMs(esp_timer_get_time());
+  taskEXIT_CRITICAL(&g_syncMux);
+  return ms;
 }
 
 bool pipelineFetching() { return g_fetching; }

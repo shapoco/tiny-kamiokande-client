@@ -16,13 +16,17 @@ void DisplaySync::noteServerTime(int64_t serverTimeMs, int64_t sentUs, int64_t h
   valid_ = true;
 }
 
-bool DisplaySync::isDue(int64_t timestampMs, int64_t nowUs) const {
-  if (timestampMs <= 0 || !valid_ || rampStartUs_ < 0) return true;
+int64_t DisplaySync::delayMs(int64_t nowUs) const {
+  if (rampStartUs_ < 0) return 0;
   float ramp = (float)(nowUs - rampStartUs_) / (QUEUE_RAMP_SEC * 1e6f);
   if (ramp > 1) ramp = 1;
   if (ramp < 0) ramp = 0;
-  const int64_t delayMs = (int64_t)(QUEUE_DELAY_SEC * 1000.0f * ramp);
-  const int64_t waitMs = timestampMs + delayMs - (nowUs / 1000 + offsetMs_);
+  return (int64_t)(QUEUE_DELAY_SEC * 1000.0f * ramp);
+}
+
+bool DisplaySync::isDue(int64_t timestampMs, int64_t nowUs) const {
+  if (timestampMs <= 0 || !valid_ || rampStartUs_ < 0) return true;
+  const int64_t waitMs = timestampMs + delayMs(nowUs) - (nowUs / 1000 + offsetMs_);
   return waitMs <= 0 || waitMs > (int64_t)(QUEUE_DELAY_SEC * 2000.0f);
 }
 

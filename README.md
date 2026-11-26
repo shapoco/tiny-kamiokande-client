@@ -23,16 +23,20 @@ The display is not guaranteed to be scientifically accurate (both the tracks and
 ## Prebuilt binaries
 
 Prebuilt firmware can be downloaded from [Releases](https://github.com/shapoco/tiny-kamiokande-client/releases).
-Extract the zip and flash with `upload.sh` in the directory for your device ([esptool](https://github.com/espressif/esptool) is required for M5Stack,
-[picotool](https://github.com/raspberrypi/picotool) for the Pico).
+Extract the zip and flash the firmware in the directory for your device.
+
+For M5Stack devices, use `upload.sh` ([esptool](https://github.com/espressif/esptool) is required).
 
 ```sh
 m5cores3/upload.sh /dev/ttyACM0   # CoreS3
 m5tab5/upload.sh /dev/ttyACM0     # Tab5
-pico_restouch_lcd_2_8/upload.sh   # Pico-ResTouch-LCD-2.8 + Pico 2 W
 ```
 
-Instead of picotool, you can also flash the Pico by holding the BOOTSEL button while plugging it in and copying the `.uf2` to the drive that appears.
+The Pico-ResTouch-LCD-2.8 + Pico 2 W needs no tools:
+
+1. Hold the BOOTSEL button on the Pico 2 W while connecting it to your PC with a USB cable (you can release the button once it is connected).
+2. A drive named `RP2350` appears. Copy `pico_restouch_lcd_2_8/tiny_kamiokande_pico_restouch_lcd_2_8.uf2` to it.
+3. When the copy finishes, the board restarts and runs the firmware (the drive disappears).
 
 The Tab5 needs its C6 updated after flashing (see below).
 
@@ -59,6 +63,8 @@ The Tab5 firmware embeds the C6 update image; run the `c6ota` command on the USB
 
 Tap the WiFi icon at the top right of the screen to open the settings screen. You can also configure it with the `wifi` command on the USB serial console.
 The settings are stored in the device's NVS (on the Pico, in the last sector of the flash).
+
+The strip above the event log at the bottom of the screen is a timeline of the last hour. It shows only the events that stopped in the detector (yellow) or started inside it (red); tap a dot to replay that event, and tap ▶ LIVE to return to the live view.
 
 The Pico-ResTouch-LCD-2.8 has a single-touch screen, so instead of pinching, double-tap the detector to zoom in and hold it to zoom out.
 

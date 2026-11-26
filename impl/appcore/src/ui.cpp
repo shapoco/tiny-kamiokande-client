@@ -1,4 +1,4 @@
-// 2D の UI: LIVE / 履歴のボタン、WiFi アイコン、WiFi 設定メニューとキーボード
+// 2D の UI: 履歴の帯 (時間軸と LIVE ボタン)、WiFi アイコン、WiFi 設定メニューとキーボード
 
 #include <cmath>
 #include <cstdio>
@@ -41,6 +41,13 @@ char *fieldOf(WifiConfig &c, int field, int &maxLen) {
   }
 }
 
+// 大文字の高さ (ベースラインから 'L' の上端まで)。GFX フォントでなければ fallback
+int capHeight(const g2::Font &f, int fallback) {
+  const g2::GFXfont *gf = f.gfx();
+  if (!gf || 'L' < gf->first || 'L' > gf->last) return fallback;
+  return -gf->glyph['L' - gf->first].yOffset;
+}
+
 }  // namespace
 
 g2::Font App::uiFont() const {
@@ -56,27 +63,44 @@ int App::iconSize() const {
 
 // ---------------------------------------------------------------- メイン画面のボタン
 
+// 履歴の帯 (記録の画像のすぐ上) の右端に LIVE ボタン、その左に時間軸。右上に WiFi アイコン
 void App::layoutButtons() {
   const int scale = h_ >= 480 ? 2 : 1;
-  const int bh = UI_BUTTON_H * scale, liveW = UI_LIVE_W * scale, hw = UI_HISTORY_W * scale, gap = UI_HISTORY_GAP * scale;
-  const int margin = UI_MARGIN * scale;
+  const int bh = UI_BUTTON_H * scale, liveW = UI_LIVE_W * scale, margin = UI_MARGIN * scale;
+  const int dotR = UI_HIST_DOT_R * scale;
   buttonCount_ = 0;
-  if (HISTORY_ENABLED) {
-    // 左下から右へ。幅が足りなければ上の行へ折り返す
-    int x = margin, y = viewH_ - margin - bh;
-    buttons_[buttonCount_++] = {x, y, liveW, bh, 0, -1};
-    x += liveW + gap * 2;
-    for (int i = 0; i < historyCount_ && buttonCount_ < HISTORY_MAX + 1; i++) {
-      if (x + hw > w_ - margin) {
-        x = margin;
-        y -= bh + gap;
-      }
-      buttons_[buttonCount_++] = {x, y, hw, bh, 1 + i, i};
-      x += hw + gap;
+  // LIVE ボタンは画面の右端のキワまで寄せる (輪郭線の右端が画面の最後の列に乗る)
+  const int liveX = w_ - liveW;
+  buttons_[buttonCount_++] = {liveX, histY_ + (histH_ - bh) / 2, liveW, bh, BUTTON_LIVE};
+  axisX0_ = margin + dotR;
+  axisX1_ = liveX - margin - dotR;
+  // 時間軸は帯の高さ全体で受ける (LIVE ボタンが先に当たる)
+  buttons_[buttonCount_++] = {0, histY_, liveX - margin / 2, histH_, BUTTON_TIMELINE};
+  const int icon = iconSize();
+  buttons_[buttonCount_++] = {w_ - margin - icon, margin, icon, icon, BUTTON_WIFI};
+}
+
+// 表示の時刻 nowMs を右端、その HISTORY_SPAN_MS 前を左端とした x 座標。範囲外なら -1
+int App::timelineX(int64_t ms, int64_t nowMs) const {
+  if (nowMs < 0 || ms > nowMs || ms < nowMs - HISTORY_SPAN_MS) return -1;
+  const int64_t t = ms - (nowMs - HISTORY_SPAN_MS);
+  return axisX0_ + (int)((int64_t)(axisX1_ - axisX0_) * t / HISTORY_SPAN_MS);
+}
+
+int App::hitTimeline(int x) const {
+  const int64_t now = platform_ ? platform_->displayTimeMs() : -1;
+  const int limit = UI_HIST_HIT_PX * (h_ >= 480 ? 2 : 1);
+  int best = -1, bestD = limit + 1;
+  for (int i = 0; i < timeline_.count(); i++) {
+    const int px = timelineX(timeline_.at(i).ms, now);
+    if (px < 0) continue;
+    const int d = abs(px - x);
+    if (d < bestD || (d == bestD && best >= 0)) {  // 同じ距離なら新しい方
+      best = i;
+      bestD = d;
     }
   }
-  const int icon = iconSize();
-  buttons_[buttonCount_++] = {w_ - margin - icon, margin, icon, icon, -1, -1};
+  return best;
 }
 
 int App::hitButton(int x, int y) const {
@@ -88,13 +112,14 @@ int App::hitButton(int x, int y) const {
   return -1;
 }
 
-void App::buttonAction(int index) {
+void App::buttonAction(int index, int x) {
   if (index < 0 || index >= buttonCount_) return;
   const Button &b = buttons_[index];
-  if (b.kind == 0) {
-    selectEntry(newestEntry(), true);
-  } else if (b.kind > 0) {
-    if (b.history >= 0 && b.history < historyCount_) selectEntry(&history_[b.history], false);
+  if (b.kind == BUTTON_LIVE) {
+    goLive();
+  } else if (b.kind == BUTTON_TIMELINE) {
+    const int i = hitTimeline(x);
+    if (i >= 0) selectHistory(timeline_.at(i).ms);
   } else {
     draft_ = wifi_;
     menuFocus_ = 0;
@@ -154,32 +179,71 @@ void App::drawViewerCount(g2::Graphics2D &g, int count) {
   g.drawString((int)(margin + eyeW + 2 * scale), y + (fh - m.height) / 2, buf);
 }
 
+// 3D の表示の右下隅に小さく版を出す (version.txt)
+void App::drawVersion(g2::Graphics2D &g) {
+#ifdef TKAPP_VERSION
+  const int scale = h_ >= 480 ? 2 : 1, margin = UI_MARGIN * scale / 2;
+  g.setFont(h_ >= 480 ? g2::Font(&g2::ShapoSansP_s12c09a01w02) : g2::Font(&g2::ShapoSansP_s08c07));
+  static const char TEXT[] = "v" TKAPP_VERSION;
+  const g2::TextMetrics m = g.textMetrics(TEXT);
+  g.setTextColor(COLOR_VERSION);
+  g.drawString(w_ - margin - m.width, viewH_ - margin - m.height, TEXT);
+#else
+  (void)g;
+#endif
+}
+
 void App::drawMainUi(g2::Graphics2D &g) {
+  drawVersion(g);
   g.setFont(uiFont());
   drawViewerCount(g, platform_ ? platform_->viewerCount() : -1);
+  drawTimeline(g);
   for (int i = 0; i < buttonCount_; i++) {
     const Button &b = buttons_[i];
     const bool pressed = pressedButton_ == i;
-    if (b.kind == 0) {
-      g.fillRoundRect(b.x, b.y, b.w, b.h, 4, pressed ? COLOR_KEY_PRESSED : COLOR_BUTTON_BG);
-      g.drawRoundRect(b.x, b.y, b.w, b.h, 4, live_ ? COLOR_SELECTED_FRAME : COLOR_BUTTON_FRAME);
-      // ▶ は三角形で描く
-      const int th = b.h / 3, tx = b.x + 7, ty = b.y + (b.h - th) / 2;
-      for (int r = 0; r < th; r++) {
-        const int half = r < th / 2 ? r : th - 1 - r;
-        g.drawLine(tx, ty + r, tx + half, ty + r, COLOR_TEXT);
-      }
-      g.setTextColor(COLOR_TEXT);
+    if (b.kind == BUTTON_LIVE) {
+      // 左右端が半円のボタン。▶ (正三角形) と「LIVE」をまとめて横に中央寄せし、
+      // 縦は▶の高さと「LIVE」の大文字の高さ (cap-height) をボタンの中央に揃える
+      const int radius = b.h / 2;
+      g.fillRoundRect(b.x, b.y, b.w, b.h, radius, pressed ? COLOR_KEY_PRESSED : COLOR_BUTTON_BG);
+      g.drawRoundRect(b.x, b.y, b.w, b.h, radius, live_ ? COLOR_SELECTED_FRAME : COLOR_BUTTON_FRAME);
       const g2::TextMetrics m = g.textMetrics("LIVE");
-      g.drawString(tx + th / 2 + 6, b.y + (b.h - m.height) / 2, "LIVE");
-    } else if (b.kind > 0) {
-      const HistoryEntry &e = history_[b.history];
-      const uint32_t c = kindColor(e);
-      g.fillRoundRect(b.x, b.y, b.w, b.h, 3, pressed ? COLOR_KEY_PRESSED : c);
-      const bool selected = !live_ && e.id == displayedId_;
-      g.drawRoundRect(b.x, b.y, b.w, b.h, 3, selected ? COLOR_SELECTED_FRAME : COLOR_BUTTON_FRAME);
-    } else {
+      const int cap = capHeight(uiFont(), m.ascent);
+      const float triH = b.h * 0.4f, triW = triH * (0.4f * 1.7320508f);  // 正三角形
+      const float gap = b.h * 0.2f;
+      const float x0 = b.x + (b.w - (triW + gap + m.width)) * 0.5f;
+      const float cy = b.y + b.h * 0.5f;
+      g.fillTriangle({x0, cy - triH / 2}, {x0, cy + triH / 2}, {x0 + triW, cy}, COLOR_TEXT);
+      g.setTextColor(COLOR_TEXT);
+      const int baseline = b.y + (b.h + cap + 1) / 2;
+      g.drawString((int)(x0 + triW + gap + 0.5f), baseline - m.ascent, "LIVE");
+    } else if (b.kind == BUTTON_WIFI) {
       drawWifiIcon(g, b.x, b.y, b.w, platform_ ? platform_->wifiState() : WifiState::UNAVAILABLE);
+    }
+  }
+}
+
+// 履歴の帯の時間軸: 横線と両端の目盛り、イベントの点 (停止 黄、発生 赤。発生を上に描く)。
+// 選んだ点 (取得中を含む) は白い輪で囲む
+void App::drawTimeline(g2::Graphics2D &g) {
+  const int scale = h_ >= 480 ? 2 : 1;
+  const int cy = histY_ + histH_ / 2, dotR = UI_HIST_DOT_R * scale, tick = UI_HIST_TICK * scale;
+  g.fillRect(0, histY_, w_, histH_, 0xFF000000u);
+  g.fillRect(axisX0_ - dotR, cy - (scale - 1) / 2, axisX1_ - axisX0_ + 2 * dotR, scale, COLOR_HIST_AXIS);
+  g.fillRect(axisX0_ - dotR, cy - tick, scale, 2 * tick + 1, COLOR_HIST_AXIS);
+  g.fillRect(axisX1_ + dotR - scale, cy - tick, scale, 2 * tick + 1, COLOR_HIST_AXIS);
+  const int64_t now = platform_ ? platform_->displayTimeMs() : -1;
+  if (now < 0) return;
+  const int64_t sel = requestedMs_ ? requestedMs_ : (live_ ? 0 : selectedMs_);
+  for (int pass = 0; pass < 2; pass++) {
+    for (int i = 0; i < timeline_.count(); i++) {
+      const HistoryItem &it = timeline_.at(i);
+      const bool inside = it.kind != LOG_STOPPING;
+      if (inside != (pass == 1)) continue;
+      const int x = timelineX(it.ms, now);
+      if (x < 0) continue;
+      if (it.ms == sel) g.fillCircle(x, cy, dotR + 2 * scale, COLOR_SELECTED_FRAME);
+      g.fillCircle(x, cy, dotR, inside ? COLOR_KIND_INSIDE : COLOR_KIND_STOPPING);
     }
   }
 }
@@ -216,7 +280,9 @@ void App::layoutLog() {
   logScale_ = w_ / logCols_ > 0 ? w_ / logCols_ : 1;
   logH_ = logScale_ * LOG_SLOTS_PER_HOUR;
   logX_ = (w_ - logCols_ * logScale_) / 2;
-  viewH_ = h_ - logH_;
+  histH_ = UI_HIST_H * (h_ >= 480 ? 2 : 1);
+  histY_ = h_ - logH_ - histH_;
+  viewH_ = histY_;
   for (auto &p : logPixels_) p = 0;
   logTex_ = g2::makeTexture(g2::PixelFormat::RGB565_SWAPPED, logCols_, LOG_SLOTS_PER_HOUR, logPixels_);
   hasLog_ = false;
@@ -230,17 +296,18 @@ void App::updateLog(const EventLog &log) {
 
 // 1 マス 1 ピクセルの画像をニアレストネイバーで拡大して描く (マスごとの fillRect より速い)
 void App::drawLog(g2::Graphics2D &g) {
-  g.fillRect(0, viewH_, w_, logH_, 0xFF000000u);
+  const int logY = h_ - logH_;
+  g.fillRect(0, logY, w_, logH_, 0xFF000000u);
   if (!hasLog_) return;
   const bool aa = g.antialias();
   g.setAntialias(false);
-  g.drawImage(logTex_, g2::Rect{logX_, viewH_, logCols_ * logScale_, logH_});
+  g.drawImage(logTex_, g2::Rect{logX_, logY, logCols_ * logScale_, logH_});
   g.setAntialias(aa);
   // 現地時刻の 0, 6, 12, 18 時の境目に黒い縦線 (幅 1 px。その時の列の左端のピクセル)
   const int64_t hourNow = logNowSlot_ / LOG_SLOTS_PER_HOUR;
   for (int c = 1; c < logCols_; c++) {
     const int64_t hour = hourNow - (logCols_ - 1 - c) + LOG_TZ_HOURS;
-    if (hour % LOG_GRID_HOURS == 0) g.fillRect(logX_ + c * logScale_, viewH_, 1, logH_, 0xFF000000u);
+    if (hour % LOG_GRID_HOURS == 0) g.fillRect(logX_ + c * logScale_, logY, 1, logH_, 0xFF000000u);
   }
 
 }

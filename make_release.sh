@@ -73,8 +73,8 @@ build_pico pico_restouch_lcd_2_8
   echo
   echo "Flash: m5cores3/upload.sh [PORT] [BAUD]   # CoreS3"
   echo "       m5tab5/upload.sh [PORT] [BAUD]     # Tab5"
-  echo "       pico_restouch_lcd_2_8/upload.sh        # Pico-ResTouch-LCD-2.8 + Pico 2 W (picotool,"
-  echo "                                              # or copy the .uf2 to the RP2350 drive in BOOTSEL mode)"
+  echo "       Pico-ResTouch-LCD-2.8 + Pico 2 W: hold BOOTSEL while plugging in USB, then copy"
+  echo "       pico_restouch_lcd_2_8/tiny_kamiokande_pico_restouch_lcd_2_8.uf2 to the RP2350 drive"
 } > "${dest_dir}/BUILD_INFO.txt"
 
 cp README.md README.ja.md "${dest_dir}/"

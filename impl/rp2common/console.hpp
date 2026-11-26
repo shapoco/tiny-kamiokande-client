@@ -7,6 +7,8 @@
 //           (Enter で今の値のまま、'-' で消す)
 //   status  WiFi の状態、IP アドレス、取得の状況、メモリ
 //   clear   認証情報を消す
+//   hist    履歴の時間軸の一覧。hist N で N 番目を選ぶ (タップと同じ)
+//   live    LIVE に戻る
 // タスクが無いので、フレームループから consolePoll() を呼んで届いた文字だけを処理する (待たない)
 
 #include "tkapp/app.hpp"
@@ -20,6 +22,9 @@ struct ConsoleHooks {
   const tkapp::WifiConfig &(*current)();
   // status の最後に足す行 (メモリなど)
   void (*status)();
+  // 履歴: index < 0 なら一覧を出す、そうでなければ index 番目を選ぶ
+  void (*history)(int index);
+  void (*live)();
 };
 
 void consoleStart(const ConsoleHooks &hooks);

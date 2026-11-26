@@ -13,15 +13,18 @@ set(TKAPP_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cbor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/eventlog.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/sync.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/history.cpp
 )
 set(TKAPP_CORE_SOURCES ${TKAPP_CORE_SOURCES} PARENT_SCOPE)
 
-option(TKAPP_HISTORY "Enable the event history (LIVE and history buttons)" ON)
 
 add_library(tkapp_core STATIC ${TKAPP_CORE_SOURCES})
 add_library(tkapp::core ALIAS tkapp_core)
 target_include_directories(tkapp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(tkapp_core PUBLIC shapoco::gfx)
 target_compile_features(tkapp_core PUBLIC cxx_std_17)
-target_compile_definitions(tkapp_core PUBLIC TKAPP_HISTORY=$<BOOL:${TKAPP_HISTORY}>)
 target_compile_options(tkapp_core PRIVATE -Wall -Wextra)
+# 版 (リポジトリ直下の version.txt)。画面の 3D の表示の右下に出す
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/../../version.txt TKAPP_VERSION LIMIT_COUNT 1)
+target_compile_definitions(tkapp_core PRIVATE TKAPP_VERSION="${TKAPP_VERSION}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../../version.txt)

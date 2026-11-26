@@ -36,7 +36,7 @@ bool App::init(int w, int h, const Buffers &buffers, Platform *platform, void *a
   h_ = h;
   platform_ = platform;
   buffers_ = buffers;
-  if (!buffers.texturePixels || !buffers.history) return false;
+  if (!buffers.texturePixels || !buffers.records || buffers.recordCapacity < RECORD_SLOTS) return false;
   layoutLog();  // viewH_ を決める
   g3::Config cfg = g3::defaultConfig((int16_t)w, (int16_t)viewH_, arena, arenaBytes);
   cfg.renderContexts = renderContexts;
@@ -45,8 +45,8 @@ bool App::init(int w, int h, const Buffers &buffers, Platform *platform, void *a
   if (!g3d_.isInitialized()) return false;
   detector_.init(buffers.texturePixels);
   detector_.setCells(nullptr);
-  historyCount_ = 0;
-  for (auto &e : history_) e = HistoryEntry();
+  for (int i = 0; i < RECORD_SLOTS; i++) records_[i] = {0, &buffers.records[i]};
+  displayedId_ = cellsId_ = latestLiveId_ = pendingLiveId_ = 0;
   initCamera();
   initScene();
   layoutButtons();
@@ -199,7 +199,7 @@ void App::pointerUp(int id) {
     uiPointerUp(p.x, p.y);
     return;
   }
-  if (p.button >= 0 && !p.moved && p.sec < TAP_MAX_SEC && hitButton(p.x, p.y) == p.button) buttonAction(p.button);
+  if (p.button >= 0 && !p.moved && p.sec < TAP_MAX_SEC && hitButton(p.x, p.y) == p.button) buttonAction(p.button, p.x);
   // シングルタッチのズーム: 3D の表示のダブルタップで拡大 (長押しの縮小は advance())
   if (!multiTouch_ && p.button < 0 && !p.moved && !p.holding && p.sec < TAP_MAX_SEC) {
     if (p.secondTap) {
@@ -226,12 +226,18 @@ void App::keyDown(Key k) {
   }
   if (k == Key::A) {
     // 履歴を新しい方から順に送り、最後まで行ったら LIVE へ戻る
-    if (!HISTORY_ENABLED || historyCount_ == 0) return;
-    HistoryEntry *cur = live_ ? nullptr : findEntry(displayedId_);
-    int idx = -1;
-    if (cur) for (int i = 0; i < historyCount_; i++) if (&history_[i] == cur) idx = i;
-    if (idx + 1 < historyCount_) selectEntry(&history_[idx + 1], false);
-    else selectEntry(newestEntry(), true);
+    const int64_t cur = requestedMs_ ? requestedMs_ : selectedMs_;
+    for (int i = timeline_.count() - 1; i >= 0; i--) {
+      const int64_t ms = timeline_.at(i).ms;
+      if (cur == 0 || ms < cur) {
+        if (timelineX(ms, platform_ ? platform_->displayTimeMs() : -1) >= 0) {
+          selectHistory(ms);
+          return;
+        }
+        break;
+      }
+    }
+    goLive();
   } else if (k == Key::B) {
     draft_ = wifi_;
     menuFocus_ = 0;
@@ -243,77 +249,86 @@ void App::keyUp(Key k) {
   if ((int)k < (int)Key::COUNT) keyHeld_[(int)k] = false;
 }
 
-// ---------------------------------------------------------------- 履歴
+// ---------------------------------------------------------------- イベントの実体と LIVE / 履歴
 
 HistoryEntry *App::findEntry(uint32_t id) {
   if (id == 0) return nullptr;
-  for (int i = 0; i < historyCount_; i++) if (history_[i].id == id) return &history_[i];
+  for (auto &e : records_) if (e.id == id) return &e;
   return nullptr;
 }
 
-HistoryEntry *App::newestEntry() { return historyCount_ > 0 ? &history_[0] : nullptr; }
-
-// 一番古いものを消す。表示中のものは消さない
-void App::trimHistory() {
-  for (int i = historyCount_ - 1; i >= 0; i--) {
-    if (history_[i].id == displayedId_) continue;
-    for (int j = i; j + 1 < historyCount_; j++) history_[j] = history_[j + 1];
-    historyCount_--;
-    history_[historyCount_] = HistoryEntry();
-    return;
+HistoryEntry *App::allocEntry(bool forLive) {
+  for (auto &e : records_) {
+    if (e.id == 0 || (e.id != displayedId_ && e.id != cellsId_ && e.id != latestLiveId_)) return &e;
   }
+  if (forLive) {
+    HistoryEntry *e = findEntry(latestLiveId_);
+    if (e && e->id != displayedId_ && e->id != cellsId_) return e;
+  }
+  return nullptr;
 }
 
 void App::pushEvent(const EventRecord &rec) {
-  const int cap = buffers_.historyCapacity < HISTORY_MAX ? buffers_.historyCapacity : HISTORY_MAX;
-  if (cap <= 0 || !buffers_.history) return;
-  if (historyCount_ >= cap) trimHistory();
-  if (historyCount_ >= cap) return;
-  EventRecord *slot = nullptr;
-  for (int s = 0; s < cap && !slot; s++) {
-    EventRecord *cand = &buffers_.history[s];
-    bool used = false;
-    for (int i = 0; i < historyCount_; i++) if (history_[i].rec == cand) used = true;
-    if (!used) slot = cand;
-  }
-  if (!slot) return;
-  memcpy(slot, &rec, sizeof(EventRecord));
-  for (int i = historyCount_; i > 0; i--) history_[i] = history_[i - 1];
-  history_[0].id = nextId_++;
-  history_[0].rec = slot;
-  historyCount_++;
+  HistoryEntry *e = allocEntry(true);
+  if (!e) return;
+  memcpy(e->rec, &rec, sizeof(EventRecord));
+  e->id = nextId_++;
+  latestLiveId_ = e->id;
   if (live_) {
-    if (displayedId_ == 0) beginTransition(&history_[0], true);
-    else if (shownSec_ >= SHOW_MIN_SEC) beginTransition(&history_[0], false);
-    else pendingLiveId_ = history_[0].id;
+    if (displayedId_ == 0) beginTransition(e, true);
+    else if (shownSec_ >= SHOW_MIN_SEC) beginTransition(e, false);
+    else pendingLiveId_ = e->id;
   }
-  layoutButtons();
   if (platform_) {
     char buf[96];
     snprintf(buf, sizeof buf, "event %lu: lit %u, od %u, %s corr %.3f hide %d, fit %lu ms",
-             (unsigned long)history_[0].id, rec.data.litCount, rec.data.odCount,
+             (unsigned long)e->id, rec.data.litCount, rec.data.odCount,
              rec.fit.show ? "show" : "hidden", (double)rec.fit.corr, rec.fit.hideReason,
              (unsigned long)rec.fit.fitMs);
     platform_->log(buf);
   }
 }
 
-void App::selectEntry(HistoryEntry *entry, bool live) {
-  live_ = live;
-  pendingLiveId_ = 0;
-  if (!entry) return;
-  if (entry->id == displayedId_ && !introActive_ && texPhase_ == TexPhase::SHOW && !live) return;
-  beginTransition(entry, true);
+void App::updateHistory(const HistoryList &list) { timeline_ = list; }
+
+// 時間軸の点を選んだ。内容をプラットフォームに頼み、届いたら showHistoryEvent() で再生する
+void App::selectHistory(int64_t ms) {
+  if (ms == selectedMs_ && !live_ && requestedMs_ == 0) return;
+  requestedMs_ = ms;
+  if (platform_) platform_->requestHistory(ms);
 }
 
-uint32_t App::kindColor(const HistoryEntry &e) const {
-  if (!e.rec) return COLOR_KIND_HIDDEN;
-  const FitResult &f = e.rec->fit;
-  if (!f.done) return COLOR_KIND_FITTING;
-  if (!f.show) return COLOR_KIND_HIDDEN;
-  if (f.kind == Kind::THROUGH) return COLOR_KIND_THROUGH;
-  if (f.kind == Kind::STOPPING) return COLOR_KIND_STOPPING;
-  return COLOR_KIND_INSIDE;
+void App::showHistoryEvent(const EventRecord &rec, int64_t ms) {
+  if (ms != requestedMs_) return;  // 取得中に別の点か LIVE を押した
+  requestedMs_ = 0;
+  HistoryEntry *e = allocEntry(false);
+  if (!e) return;
+  memcpy(e->rec, &rec, sizeof(EventRecord));
+  e->id = nextId_++;
+  live_ = false;
+  pendingLiveId_ = 0;
+  selectedMs_ = ms;
+  beginTransition(e, true);
+  if (platform_) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "history %lld: lit %u", (long long)ms, rec.data.litCount);
+    platform_->log(buf);
+  }
+}
+
+void App::historyFailed(int64_t ms) {
+  if (ms == requestedMs_) requestedMs_ = 0;
+}
+
+// LIVE に戻り、最新の LIVE のイベントを即座に再生する
+void App::goLive() {
+  requestedMs_ = 0;
+  if (live_) return;
+  live_ = true;
+  selectedMs_ = 0;
+  pendingLiveId_ = 0;
+  HistoryEntry *e = findEntry(latestLiveId_);
+  if (e) beginTransition(e, true);
 }
 
 // ---------------------------------------------------------------- フレーム

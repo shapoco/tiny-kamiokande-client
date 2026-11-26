@@ -45,8 +45,7 @@ target_compile_definitions(shapogfx PRIVATE
     "SHAPOGFX3D_HOT_ATTR=__attribute__((section(\".time_critical.gfx3d\")))"
     SHAPOGFX3D_HOT_INSTANTIATE=1)
 
-# アプリ本体。履歴機能は ESP-IDF 版と同じく使わない
-set(TKAPP_HISTORY OFF CACHE BOOL "" FORCE)
+# アプリ本体
 add_subdirectory(${TKRP2_IMPL}/appcore appcore)
 
 set(TKRP2_SOURCES
@@ -134,9 +133,10 @@ function(tkrp2_setup target)
         pico_enable_stdio_uart(${target} 0)
     endif()
     if(RP2_GFX3D_IN_RAM)
-        # ShapoGFX の 3D 描画 (src/gfx3d/ の gfx3d.cpp、scene.cpp、shapes.cpp。gfx2d の shapes.cpp も
-        # 同名のため一緒に入る) を RAM に置く。Flash の .text の規則から外すと、.data の *(.text*) が拾う
-        # (ShapoGFX の example/rp2350-touch-lcd-2/demo3d と同じ。XIP キャッシュを通信のコードと取り合わない)
+        # ShapoGFX の 3D 描画 (src/gfx3d/ の gfx3d.cpp と scene.cpp) を RAM に置く。Flash の .text の規則から外すと、
+        # .data の *(.text*) が拾う (ShapoGFX の example/rp2350-touch-lcd-2/demo3d に倣う。XIP キャッシュを通信のコードと
+        # 取り合わない)。shapes.cpp (形状の生成。gfx2d の同名の図形描画も一緒に入る、約 18 KB) は描画の内側ではないので
+        # Flash のまま (TLS の握手のヒープの余裕のため)
         set(SDK_LD ${PICO_SDK_PATH}/src/rp2_common/pico_crt0/rp2350/memmap_default.ld)
         file(READ ${SDK_LD} LD)
         set(FLASH_RULE "*(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .text*)")
@@ -145,7 +145,7 @@ function(tkrp2_setup target)
             message(FATAL_ERROR "RP2_GFX3D_IN_RAM: the SDK's linker script changed")
         endif()
         string(REPLACE "${FLASH_RULE}"
-            "*(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a: *libshapogfx.a:gfx3d.cpp.o *libshapogfx.a:scene.cpp.o *libshapogfx.a:shapes.cpp.o) .text*)"
+            "*(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a: *libshapogfx.a:gfx3d.cpp.o *libshapogfx.a:scene.cpp.o) .text*)"
             LD "${LD}")
         file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/memmap_gfx3d_in_ram.ld "${LD}")
         pico_set_linker_script(${target} ${CMAKE_CURRENT_BINARY_DIR}/memmap_gfx3d_in_ram.ld)

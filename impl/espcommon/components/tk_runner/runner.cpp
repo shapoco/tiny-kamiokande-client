@@ -42,6 +42,8 @@ class EspPlatform : public tkapp::Platform {
   tkapp::WifiState wifiState() override { return demo_ ? tkapp::WifiState::UNAVAILABLE : netState(); }
   bool fetching() override { return tkrunner::pipelineFetching(); }
   int viewerCount() override { return tkrunner::pipelineViewerCount(); }
+  int64_t displayTimeMs() override { return tkrunner::pipelineDisplayTimeMs(); }
+  void requestHistory(int64_t ms) override { tkrunner::pipelineRequestHistory(ms); }
   void log(const char *msg) override { std::printf("app: %s\n", msg); }
   bool demo_ = false;
 };
@@ -186,12 +188,12 @@ void run(Board &board, const Config &cfg) {
   std::printf("app %u bytes in %s\n", (unsigned)sizeof(tkapp::App), where);
   g_app = new (appMem) tkapp::App();
   tkapp::Buffers buffers;
-  buffers.history = (tkapp::EventRecord *)allocAny(sizeof(tkapp::EventRecord) * tkapp::HISTORY_MAX, "history", &where);
-  buffers.historyCapacity = tkapp::HISTORY_MAX;
-  std::printf("history %u bytes in %s\n", (unsigned)(sizeof(tkapp::EventRecord) * tkapp::HISTORY_MAX), where);
+  buffers.records = (tkapp::EventRecord *)allocAny(sizeof(tkapp::EventRecord) * tkapp::RECORD_SLOTS, "records", &where);
+  buffers.recordCapacity = tkapp::RECORD_SLOTS;
+  std::printf("records %u bytes in %s\n", (unsigned)(sizeof(tkapp::EventRecord) * tkapp::RECORD_SLOTS), where);
   buffers.texturePixels = (uint16_t *)allocInternal(sizeof(uint16_t) * tkapp::TEXTURE_PIXELS, "textures");
   void *arena = allocInternal(ARENA_BYTES, "3D arena");
-  if (!buffers.history || !buffers.texturePixels || !arena) halt("buffers did not fit");
+  if (!buffers.records || !buffers.texturePixels || !arena) halt("buffers did not fit");
 
   g_platform.demo_ = cfg.demo;
   if (!g_app->init(w, h, buffers, &g_platform, arena, ARENA_BYTES, RENDER_CORES)) halt("app init failed");
@@ -244,6 +246,39 @@ void run(Board &board, const Config &cfg) {
     {
       static uint32_t logGen = 0;
       pipelineVisitLog(logGen, [](const tkapp::EventLog &log, void *) { g_app->updateLog(log); }, nullptr);
+      static uint32_t histGen = 0;
+      pipelineVisitHistory(histGen, [](const tkapp::HistoryList &list, void *) { g_app->updateHistory(list); }, nullptr);
+    }
+    // シリアルの hist / live
+    if (!cfg.demo) {
+      const int cmd = serialTakeHistoryCommand();
+      const tkapp::HistoryList &list = g_app->timeline();
+      if (cmd == -2) {
+        g_app->goLive();
+      } else if (cmd == -1) {
+        const int64_t now = pipelineDisplayTimeMs();
+        std::printf("history (display time %lld, %s):\n", (long long)now, g_app->live() ? "live" : "history");
+        for (int i = 0; i < list.count(); i++) {
+          std::printf("  %d: %lld kind %d, %lld s ago\n", i, (long long)list.at(i).ms, list.at(i).kind,
+                      (long long)(now - list.at(i).ms) / 1000);
+        }
+      } else if (cmd >= 0) {
+        if (cmd < list.count()) g_app->selectHistory(list.at(cmd).ms);
+        else std::printf("no such item\n");
+      }
+    }
+    // 頼んだ履歴の内容が届いていれば再生する
+    {
+      tkapp::EventRecord *rec;
+      int64_t ms;
+      while (pipelineTakeHistory(&rec, &ms)) {
+        if (rec) {
+          g_app->showHistoryEvent(*rec, ms);
+          pipelineRelease(rec);
+        } else {
+          g_app->historyFailed(ms);
+        }
+      }
     }
 
     board.poll(*g_app);

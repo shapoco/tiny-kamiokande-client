@@ -145,6 +145,7 @@ void App::beginTransition(HistoryEntry *entry, bool instant) {
     starOpacity_ = 0;
     fitVisible_ = false;
     detector_.setCells(pendingCells_);
+    cellsId_ = displayedId_;
     hasPending_ = false;
     texturesDirty_ = true;
     texPhase_ = TexPhase::BLACK;
@@ -323,6 +324,7 @@ void App::updateTransition(float dt) {
     if (texBrightness_ == 0) {
       if (hasPending_) {
         detector_.setCells(pendingCells_);
+        cellsId_ = displayedId_;
         hasPending_ = false;
         texturesDirty_ = true;
       }

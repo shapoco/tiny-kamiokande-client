@@ -26,10 +26,17 @@ class DisplaySync {
   // 異常に先の時刻 (遅れの 2 倍以上) なら待たない
   bool isDue(int64_t timestampMs, int64_t nowUs) const;
 
+  // 今のサーバ時刻 (UNIX ms)。分からなければ -1
+  int64_t serverNowMs(int64_t nowUs) const { return valid_ ? nowUs / 1000 + offsetMs_ : -1; }
+  // 表示の時刻 (サーバ時刻 - 今の遅れ。この時刻までに現れたイベントが表示済み)。分からなければ -1
+  int64_t displayTimeMs(int64_t nowUs) const { return valid_ ? nowUs / 1000 + offsetMs_ - delayMs(nowUs) : -1; }
+
   bool clockValid() const { return valid_; }
   int64_t clockOffsetMs() const { return offsetMs_; }  // サーバ時刻 (UNIX ms) - 端末の時計 (ms)
 
  private:
+  int64_t delayMs(int64_t nowUs) const;
+
   static constexpr int SAMPLES = 10;
   struct Sample {
     int64_t waitUs, offsetMs;

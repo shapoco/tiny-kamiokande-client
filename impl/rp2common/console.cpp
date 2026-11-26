@@ -1,6 +1,7 @@
 #include "console.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "net.hpp"
@@ -103,8 +104,13 @@ void command(const char *line) {
   } else if (!strcmp(line, "clear")) {
     g_hooks.apply(tkapp::WifiConfig());
     std::printf("credentials cleared\n");
+  } else if (!strcmp(line, "hist") || !strncmp(line, "hist ", 5)) {
+    g_hooks.history(line[4] ? atoi(line + 5) : -1);
+  } else if (!strcmp(line, "live")) {
+    g_hooks.live();
   } else if (!strcmp(line, "help") || !strcmp(line, "?")) {
-    std::printf("commands: wifi (set credentials), status, clear (erase credentials), help\n");
+    std::printf("commands: wifi (set credentials), status, clear (erase credentials), hist [N] (list / select history), "
+                "live, help\n");
   } else if (line[0]) {
     std::printf("unknown command '%s' (try 'help')\n", line);
   }

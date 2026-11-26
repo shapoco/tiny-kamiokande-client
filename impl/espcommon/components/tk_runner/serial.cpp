@@ -5,6 +5,7 @@
 #include <sdkconfig.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
@@ -30,6 +31,7 @@ struct ExtraCommand {
   void (*fn)();
 };
 ExtraCommand g_extra[4];
+volatile int g_histCmd = -3;  // serialTakeHistoryCommand()
 int g_extraCount = 0;
 
 // 1 行読む (改行を除く)。エコーする。EOF なら false
@@ -127,11 +129,15 @@ void serialTask(void *) {
     readLine(line, sizeof line);
     if (!strcmp(line, "wifi")) cmdWifi();
     else if (!strcmp(line, "status")) cmdStatus();
+    else if (!strcmp(line, "hist")) g_histCmd = -1;
+    else if (!strncmp(line, "hist ", 5)) g_histCmd = atoi(line + 5);
+    else if (!strcmp(line, "live")) g_histCmd = -2;
     else if (!strcmp(line, "clear")) {
       netClearConfig();
       std::printf("credentials cleared\n");
     } else if (!strcmp(line, "help") || !strcmp(line, "?")) {
-      std::printf("commands: wifi (set credentials), status, clear (erase credentials), help");
+      std::printf("commands: wifi (set credentials), status, clear (erase credentials), hist [N] (list / select history), "
+                  "live, help");
       for (int i = 0; i < g_extraCount; i++) std::printf(", %s (%s)", g_extra[i].name, g_extra[i].help);
       std::printf("\n");
     } else if (line[0]) {
@@ -148,6 +154,12 @@ void serialTask(void *) {
 }
 
 }  // namespace
+
+int serialTakeHistoryCommand() {
+  const int c = g_histCmd;
+  g_histCmd = -3;
+  return c;
+}
 
 void serialAddCommand(const char *name, const char *help, void (*fn)()) {
   if (g_extraCount < (int)(sizeof(g_extra) / sizeof(g_extra[0]))) g_extra[g_extraCount++] = {name, help, fn};

@@ -52,13 +52,8 @@ constexpr float SHOW_MIN_SEC = 0.0f;
 constexpr float QUEUE_DELAY_SEC = 15.0f;
 constexpr float QUEUE_RAMP_SEC = 60.0f;
 constexpr int MIN_LIT_PMTS = 200;         // 色の付いた PMT がこれ未満のデータは空の画像とみなして捨てる
-// 履歴機能 (▶ LIVE と履歴のボタン、過去のイベントの再生)。ビルド時に TKAPP_HISTORY で選ぶ。
-// 無効のときも表示中の 1 件と次に届く 1 件を置く領域は要る
-#ifndef TKAPP_HISTORY
-#define TKAPP_HISTORY 1
-#endif
-constexpr bool HISTORY_ENABLED = TKAPP_HISTORY != 0;
-constexpr int HISTORY_MAX = HISTORY_ENABLED ? 20 : 2;
+// イベントの実体 (EventRecord) の枠の数: 表示中、最新の LIVE (履歴から戻るとき用)、受け取ったもの
+constexpr int RECORD_SLOTS = 3;
 
 // カメラ
 constexpr float CAMERA_FOV_DEG = 60.0f;
@@ -147,10 +142,13 @@ constexpr int FACILITY_COUNT = (int)(sizeof(FACILITIES) / sizeof(FACILITIES[0]))
 
 // UI
 constexpr int UI_MARGIN = 6;             // 画面の端からの余白 [px]
-constexpr int UI_BUTTON_H = 22;          // LIVE / 履歴ボタンの高さ
+constexpr int UI_BUTTON_H = 18;          // LIVE ボタンの高さ
 constexpr int UI_LIVE_W = 54;
-constexpr int UI_HISTORY_W = 14;         // 履歴ボタンの幅
-constexpr int UI_HISTORY_GAP = 3;
+// 履歴の帯 (記録の画像のすぐ上。左に時間軸、右に LIVE ボタン)
+constexpr int UI_HIST_H = 22;            // 帯の高さ
+constexpr int UI_HIST_DOT_R = 3;         // イベントの点の半径
+constexpr int UI_HIST_HIT_PX = 12;       // タップの当たり判定 (横)
+constexpr int UI_HIST_TICK = 4;          // 時間軸の両端の目盛りの半分の長さ
 constexpr int UI_TOUCH_SLOP = 6;         // 当たり判定を広げる量
 constexpr int UI_ICON_MIN = 24;          // WiFi アイコンの大きさの下限 (CoreS3 の 240×320 でこの値)
 constexpr int UI_ICON_DIV = 20;          // 大きさは画面の短辺 / この値 (Tab5 の 360×640 では下限と同じ 24 になる)
@@ -163,11 +161,10 @@ constexpr float DOUBLE_TAP_ZOOM = 0.6f;    // 1 回の拡大で距離に掛け�
 constexpr float HOLD_ZOOM_SEC = 0.5f;      // 動かさずにこれだけ押し続けたら縮小を始める
 constexpr float HOLD_ZOOM_RATE = 1.0f;     // 縮小の速さ (1 秒あたりの距離倍率の対数)
 static_assert(HOLD_ZOOM_SEC >= TAP_MAX_SEC, "a hold must not end as a tap");
-constexpr uint32_t COLOR_KIND_THROUGH = 0xFF2070E0u;
+// 履歴の時間軸の点の色 (Web 版と同じ: 停止 黄、検出器内で発生 赤)
 constexpr uint32_t COLOR_KIND_STOPPING = 0xFFE0A020u;
 constexpr uint32_t COLOR_KIND_INSIDE = 0xFFE03030u;
-constexpr uint32_t COLOR_KIND_HIDDEN = 0xFF555555u;
-constexpr uint32_t COLOR_KIND_FITTING = 0xFF202020u;
+constexpr uint32_t COLOR_HIST_AXIS = 0xFF505050u;
 constexpr uint32_t COLOR_BUTTON_BG = 0xFF202020u;
 constexpr uint32_t COLOR_BUTTON_FRAME = 0xFF606060u;
 constexpr uint32_t COLOR_SELECTED_FRAME = 0xFFFFFFFFu;
@@ -181,6 +178,7 @@ constexpr uint32_t COLOR_FIELD_ACTIVE = 0xFF405060u;
 constexpr uint32_t COLOR_WIFI_CONNECTED = 0xFF606060u;   // 接続済みは目立たない灰色
 constexpr uint32_t COLOR_WIFI_FETCHING = 0xFF3C6E8Cu;    // api.php から取得中。接続済みの灰色と同じくらいの明るさの暗い空色
 constexpr uint32_t COLOR_VIEWERS = COLOR_WIFI_CONNECTED;  // 左上の接続数。WiFi アイコンと同じ明るさ
+constexpr uint32_t COLOR_VERSION = 0xFF484848u;           // 3D の表示の右下の版。接続数より暗く
 
 
 // 設定の文字列の長さ (終端を含まない)

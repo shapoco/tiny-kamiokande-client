@@ -35,6 +35,7 @@ Super-Kamiokande Realtime Monitor が公開しているイベントディスプ�
 cmake -S impl/host -B impl/host/build -DCMAKE_BUILD_TYPE=Release -DSHAPOGFX3D_CORRECT_PERSPECTIVE=0
 cmake --build impl/host/build
 impl/host/build/tkapp_host --out frames --snap 1,2,5 a.cbor b.cbor     # 詳細はソース先頭のコメント
+impl/host/build/tkapp_host --hist-demo 8 --tap 66,291,5 --snap 8 a.cbor # 履歴の時間軸に点を並べ、タップして再生する
 node tools/json2cbor.mjs report.json out.cbor                           # JSON の応答やダンプを CBOR にする
 
 # CoreS3 (Tab5 は impl/m5tab5/)
@@ -67,7 +68,8 @@ impl/pico_restouch_lcd_2_8/flash_swd.sh              # SWD (Debug Probe、OpenOC
 
 ### 2.1 要求
 
-- `GET api.php?fmt=bin&log=N`。`fmt=bin` で CBOR (`application/cbor`)、`log` はイベントの記録 (2.4) の要求。
+- `GET api.php?fmt=bin&log=N&hist=T`。`fmt=bin` で CBOR (`application/cbor`)、`log` はイベントの記録 (2.4)、`hist` は履歴の一覧 (2.6) の要求。
+- `GET api.php?fmt=bin&at=T`: 最新の内容の代わりに時刻 T の履歴の内容を返す (2.6)。
 - サーバは元画像を 10 秒以上の間隔でしか取りに行かず、その間は同じ内容を返す。クライアントは 9 秒ごとに取得して世代を取りこぼさない (5.1)。
 
 ### 2.2 応答 (CBOR)
@@ -88,6 +90,9 @@ impl/pico_restouch_lcd_2_8/flash_swd.sh              # SWD (Debug Probe、OpenOC
 | `od.{top,side,bottom}` | `count`, `hits`。`hits` は 1 ヒット 6 バイト (u16 u, u16 v, u16 rgb565、u/v は各面の表示領域内で 0..65535 に正規化) の byte string |
 | `fit` | 軌跡の推定結果 (2.3)。推定できなかったときや取得失敗時は null |
 | `log` | `log=` を付けたときだけ。イベントの記録 (2.4)。読めなければ null。取得失敗時 (`statusCode ≠ 0`) も入る |
+| `history` | `hist=` を付けたときだけ。履歴の一覧 (2.6)。読めなければ null。取得失敗時も入る |
+
+`statusCode` は ほかに 3 (`at=` の履歴がない) がある。
 
 PMT の色は 16 色の凡例のどれかなので、クライアントは RGB565 を凡例の色番号に戻して持つ (4.1)。
 
@@ -134,6 +139,18 @@ PMT の色は 16 色の凡例のどれかなので、クライアントは RGB56
 | `s1.cbor` | 上面 → 底面の少し傾いた貫通 | 貫通、corr 0.87 |
 | `s2.cbor` | 上面 → 側面の斜めの貫通 | 貫通、corr 0.91 |
 | `s3.cbor` | 側面の上から入って水槽内で停止 | 停止、corr 0.88 |
+
+### 2.6 履歴 (`history`、`at`)
+
+サーバは推定したイベント (内容が変わった画像) を 24 時間保存し、一覧と内容を配信する。誰もアクセスしなかった時間帯は履歴もない。
+
+- 一覧: `hist=T` で、時刻 T (UNIX ミリ秒) より後の履歴を `history` に `[時刻 (UNIX ミリ秒), 種別]` の配列 (時刻の昇順) で返す。
+  種別の番号はイベントの記録 (2.4) と同じ。T = 0 なら全部 (24 時間分、約 900 件 = 10 KB)。時刻は単調に増えるので、
+  受け取った最後の時刻を次の T にすれば差分だけを受け取れる。1 時間でおよそ 150 件 (1.7 KB)。
+- 内容: `at=T` で、時刻 T (一覧の時刻そのもの) の履歴を最新の内容の代わりに返す。他のキーは通常と同じ (`fit` は保存時の推定結果、
+  `serverTimeMs` と `clients` は応答した時点の値)。無ければ `statusCode` 3。
+- MCU 版の使い方は 4.5。初回はサーバ時刻が分かるまで `hist` を付けず (初回の `log` と重なると受信バッファを圧迫するため)、
+  2 回目から「サーバ時刻 − 1 時間 − 余裕」以降、その後は前回の最後の時刻から後ろを取る (`HistoryList::requestFrom()`)。
 
 ## 3. 表示の共通仕様 (Web 版と同じ)
 
@@ -274,33 +291,48 @@ MCU 版での実装は 5.1。
     ダブルタップ (`DOUBLE_TAP_SEC` 以内、`DOUBLE_TAP_MAX_DIST_PX` 以内) で拡大 (距離 × `DOUBLE_TAP_ZOOM`)、
     動かさずに `HOLD_ZOOM_SEC` 押し続けると離すまで縮小 (`HOLD_ZOOM_RATE`)。ホスト版は `--single-touch` で同じ操作になる。
   - タップ (移動 `TAP_MAX_MOVE_PX` 以内、`TAP_MAX_SEC` 以内) でボタン。ボタンを押したまま動かしたら押下を取り消す。
-  - キー: LEFT / RIGHT で回転、UP / DOWN でズーム、A で履歴を新しい順に送り最後は LIVE へ、B で WiFi 設定を開く。設定画面では十字キーでフォーカス、A で決定、B で戻る。
+  - キー: LEFT / RIGHT で回転、UP / DOWN でズーム、A で時間軸の点を新しい順に選び最後は LIVE へ、B で WiFi 設定を開く。設定画面では十字キーでフォーカス、A で決定、B で戻る。
 
-### 4.5 履歴と表示の切り替え (`app.cpp`、`anim.cpp`)
+### 4.5 LIVE と履歴、表示の切り替え (`app.cpp`、`anim.cpp`、`history.hpp`)
 
-- 履歴機能はビルド時のマクロ `TKAPP_HISTORY` で選ぶ (ホスト版は既定で有効、CoreS3 / Tab5 は無効。`idf.py -DTKAPP_HISTORY=1 build` で有効)。
-  無効のときは LIVE と履歴のボタンを出さず常に LIVE で、履歴の領域は表示中の 1 件と次に届く 1 件の 2 件だけ (`HISTORY_MAX`)。
-- `pushEvent()` は `EventRecord` を履歴 (新しい順、最大 `HISTORY_MAX`) にコピーする。いっぱいなら表示中以外で最も古いものを消す。
-- LIVE モード: 新しい件が届いたら即座に切り替える。表示の時刻はパイプラインの表示待ちのキュー (5.1) が決める。
+2026-11-26 に、手元で最大 20 件を持ってボタンで並べる履歴 (`TKAPP_HISTORY`、MCU では無効にしていた) をやめ、
+Web 版と同じくサーバの履歴 (2.6) を画面下部の時間軸に並べる形にした (全機種で有効)。
+
+- イベントの実体 (`EventRecord`、約 8 KB) は `RECORD_SLOTS` (3) 枠を回して使う: 表示中 (フェードアウト中は前の分も、検出器のテクスチャが
+  セルを読んでいる `cellsId_`)、最新の LIVE (`latestLiveId_`。履歴から LIVE に戻るときに再生する)、受け取ったもの。
+  空きが無いとき、LIVE のイベントは表示していない最新の LIVE の枠を上書きする (`allocEntry()`)。
+- LIVE モード: `pushEvent()` で届いたら即座に切り替える。表示の時刻はパイプラインの表示待ちのキュー (5.1) が決める。
   (`SHOW_MIN_SEC` 経つまで切り替えを待つ仕組みもあるが、端末間の同期のため 0 にしてある)
-- 履歴のボタンで LIVE を離れてその件を即座に再生、LIVE ボタンで最新の件を即座に再生する。
+- 時間軸: パイプラインが応答の `history` から、直近 1 時間 (`HISTORY_SPAN_MS`) の「壁から入って停止」「検出器内で発生」「発生・停止」だけを
+  `HistoryList` (最大 64 件) に取り込み、描画側が `App::updateHistory()` で写す。他の種別は画面が狭いので捨てる (実測で 1 時間に 2〜6 件)。
+- 点を選ぶ (`selectHistory()`) と `Platform::requestHistory(時刻)` で内容 (`?at=`) を頼み、届いたら `showHistoryEvent()` で
+  LIVE モードを離れて即座に再生する (フェードアウトなし。保存済みの推定結果を使う)。失敗したら `historyFailed()`。
+  取得中に別の点か LIVE を押したら、前の結果は捨てる。履歴の表示中も LIVE のイベントは受け取り、最新の LIVE として持つ (表示は変えない)。
+- LIVE ボタンで LIVE モードに戻り、最新の LIVE のイベントを即座に再生する。
 - 表示の切り替え (`texPhase_`: FADE_OUT → BLACK → INTRO | FADE_IN → SHOW)、流星、閃光、1/f ゆらぎ、オーラの脈動は Web 版の移植 (3.4)で、関数名と定数名も対応させてある。
   推定結果は応答と一緒に届くので、BLACK で推定を待つことは無い。
 
 ### 4.6 UI (`ui.cpp`)
 
-- メイン画面: 左下に「▶ LIVE」と履歴のボタン (履歴機能が有効なときだけ。左から新しい順、幅が足りなければ上の行へ折り返す)。色は Web 版と同じ (貫通 青、停止 黄、内部 赤、表示しない 灰)。選択中は白い枠。
-  右上に WiFi アイコン (接続済みは目立たない灰色、api.php から取得している間は同じくらいの明るさの暗い空色 (`COLOR_WIFI_FETCHING`)、接続中 黄で点滅、失敗 赤 + ×、未設定 灰 + ×、通信なし (デモ) 暗い灰)。当たり判定は `UI_TOUCH_SLOP` 広げる。
+- メイン画面: 右上に WiFi アイコン (接続済みは目立たない灰色、api.php から取得している間は同じくらいの明るさの暗い空色 (`COLOR_WIFI_FETCHING`)、接続中 黄で点滅、失敗 赤 + ×、未設定 灰 + ×、通信なし (デモ) 暗い灰)。当たり判定は `UI_TOUCH_SLOP` 広げる。
 - 左上に接続数 (api.php の `clients`) を「👁123」で出す (高さは右上の WiFi アイコンの中央に揃える。2026-11-25 に左下から移した。推定をサーバに移すまではここに推定の進み具合を出していた)。目は 2 本の弧と黒目の円で描き (フォントに絵文字が無いため)、色は接続済みの WiFi アイコンと同じ灰色 (`COLOR_VIEWERS`)。
   値は `Platform::viewerCount()` (ESP-IDF 版は `pipelineViewerCount()`、60 秒以上更新がなければ出さない。
   ホスト版は最後に読んだ応答の値か `--viewers N`)。
 - 最下部にイベントの記録 (1 列 1 時間、1 マス 10 分。右端が現在の時、上から 10 分ずつ)。列数は画面の幅を割り切れるもの (72 → 80 の順) を選び、
   整数倍に拡大する: Tab5 (360 幅) は 72 時間 × 5 px = 360×30 (パネル上は 720×60)、CoreS3 (240 幅) は 80 時間 × 3 px = 240×18。
   割り切れない幅では 72 列で中央に置く。MCU 版は画面の向きが固定 (縦長) なので 1 週間 (168 列) の表示はない。
-  3D の表示 (Graphics3D の高さ、カメラの縦横比、投影)、LIVE と履歴のボタンはその上の領域 (`viewH_`) に置く。
+  3D の表示 (Graphics3D の高さ、カメラの縦横比、投影) は記録と履歴の帯の上の領域 (`viewH_`) に置く。
   画像は 1 マス 1 ピクセルのテクスチャを `drawImage` で拡大して描く (ニアレストネイバー。ホストで 240×18 が 0.9 µs、マスごとの `fillRect` 480 回は 5.9 µs)。
   日本時間 (`LOG_TZ_HOURS`) の 0, 6, 12, 18 時の境目に黒い縦線 (幅 1 px、その時の列の左端のピクセル。Tab5 はパネル上 2 px) を引く。
   記録をまだ受け取っていない (デモを含む) ときは黒。`App::updateLog()` で受け取ったときに画像を作り直す。
+- 履歴の帯 (4.5): 記録のすぐ上に高さ `UI_HIST_H` (22 px、480 px 以上は 2 倍)。画面の右端のキワ (輪郭線が最後の列に乗る位置) に
+  「▶ LIVE」ボタン (左右端が半円。LIVE モードの間は白い枠)。▶ はボタンの高さの 1/2 の正三角形で、▶ と「LIVE」をまとめて横に中央寄せし、
+  縦は▶の中心と「LIVE」の大文字の高さ (フォントの 'L' のグリフから求める cap-height) をボタンの中央に揃える。その左に時間軸 (横線と両端の目盛り)。右端が表示の時刻 (`Platform::displayTimeMs()` = サーバ時刻 − 表示の遅れ。まだ表示していないイベントは出さない)、
+  左端がその 1 時間前で、毎フレーム描き直すので左へ流れる。点は半径 `UI_HIST_DOT_R` (3 px。Web 版の 2 倍) で、停止は黄、発生 (発生・停止を含む) は赤
+  (発生を上に描く)。選んだ点 (取得中を含む) は白い輪で囲む。表示の時刻が分からない (サーバ時刻が未定、デモ) 間は点を出さない。
+  タップは帯の高さ全体で受け、横に `UI_HIST_HIT_PX` (12 px) 以内で最も近い点を選ぶ。Web 版のフキダシ、表示期間の切り替えは無い。
+- 3D の表示の右下隅に版 (`version.txt`。ビルド時に `TKAPP_VERSION` として埋め込む) を小さく暗い灰色 (`COLOR_VERSION`) で出す
+  (480 px 以上は 12 px、それ未満は 8 px のフォント)。
 - ほかにステータスや説明の文字は出さない。
 - WiFi アイコンのタップ (またはキー B) で設定メニュー: SSID、Password、IP (空なら DHCP)、Netmask、Gateway、DNS の 6 項目と Connect / Cancel。
   項目をタップするとキーボード画面 (QWERTY 4 行 + 小文字/大文字/記号の切り替え、スペース、BS、OK、Esc)。大文字は 1 文字で小文字に戻る。
@@ -310,8 +342,10 @@ MCU 版での実装は 5.1。
 
 ### 4.7 プラットフォームとの I/F (`app.hpp`)
 
-- `Platform`: `applyWifiConfig()`、`wifiState()`、`log()` を実装する。省略可: `fetching()` (取得中か)、`viewerCount()` (接続数)。
-- `App::updateLog(const EventLog &)`: イベントの記録が更新されたら描画スレッドから呼ぶ (フレームの間)。
+- `Platform`: `applyWifiConfig()`、`wifiState()`、`log()` を実装する。省略可: `fetching()` (取得中か)、`viewerCount()` (接続数)、
+  `displayTimeMs()` (表示の時刻)、`requestHistory()` (履歴の内容の取得)。
+- `App::updateLog(const EventLog &)`、`App::updateHistory(const HistoryList &)`: 記録、履歴の一覧が更新されたら描画スレッドから呼ぶ (フレームの間)。
+- `App::showHistoryEvent(rec, ms)` / `historyFailed(ms)`: `requestHistory()` の結果。`selectHistory(ms)`、`goLive()` はシリアルのコマンドからも使う。
 - `App::init(w, h, buffers, platform, arena, arenaBytes, renderContexts)`。arena は Graphics3D の作業領域 (内蔵 RAM)。
 - フレーム: `advance(dt)` → `buildScene()` → 帯ごとに `renderStrip(ctx, g2d, surface, y)` → `endFrame()`。`renderStrip()` は異なる `ctx` なら複数コアから同時に呼べる。
 - `App` 自体は PSRAM に置いてよい (毎ピクセル触るのはテクスチャと arena だけ。CoreS3 で速度差なし)。
@@ -330,6 +364,8 @@ MCU 版での実装は 5.1。
   2 つ目のコンテキストの分 (スパンの領域) は、1 走査線あたりのスパンの上限を既定の 512 から `SPAN_CAPACITY` (256。実測のピークは 90〜110) に絞って捻出する。
 - パイプライン: `FETCH_INTERVAL_SEC` (9 秒、取得の開始から次の開始まで) ごとに api.php を HTTPS で取得 → CBOR を展開 →
   `pixelsCrc32` が前回と同じか点灯が少なければ捨てる → 準備できた `EventRecord` (推定結果は応答の `fit`) をキューへ。
+  要求には履歴の一覧の `hist=` も付け (2.6)、`HistoryList` に取り込む (記録と同じミューテックス。描画側は `pipelineVisitHistory()`)。
+- 履歴の内容: 描画側の `pipelineRequestHistory(ms)` でタスクを起こし (タスク通知)、`?at=ms` を取得して展開し、`pipelineTakeHistory()` で渡す。
   描画側はフレームごとに `pipelinePoll()` で受け取り `App::pushEvent()` にコピーして `pipelineRelease()` で返す。
   スロットは 5 つ (PSRAM。表示待ち 15 秒 / 9 秒 ≒ 2 件 + 取得中の 1 件 + 余裕)。
 - 表示待ちのキュー (端末間の同期。3.3): 判定は機種に依存しない `tkapp::DisplaySync` (`sync.hpp`。RP2350 版と共有)。`pipelinePoll()` はキューの先頭が表示の時刻
@@ -359,7 +395,8 @@ PSRAM: App (約 56 KB)、履歴 (履歴機能なしで 2 × 8 KB)、パイプラ
 - 起動時に保存があれば接続する。切断されたら数秒後に再接続を繰り返し、30 秒以上つながらなければ FAILED 表示 (再接続は続ける)。
 - IPv4 が空なら DHCP。静的 IP のときマスクが空なら /24、DNS が空ならゲートウェイを使う。
 - HTTPS は esp_http_client + 証明書バンドル。応答は PSRAM のバッファに読む。
-- シリアルコンソール (USB Serial/JTAG): `wifi` で対話的に設定 (Enter で現在値のまま、`-` で消す)、`status`、`clear`、`help`。設定を変えたら描画側が次のフレームで App に反映する。
+- シリアルコンソール (USB Serial/JTAG): `wifi` で対話的に設定 (Enter で現在値のまま、`-` で消す)、`status`、`clear`、`help`、
+  `hist` (履歴の時間軸の一覧) / `hist N` (N 番目を選ぶ) / `live` (描画側が次のフレームで処理する。実機での確認用)。設定を変えたら描画側が次のフレームで App に反映する。
   VFS が CR を LF に変えることがあるので、行末は CR / LF / CRLF のどれでも受け付ける。`tools/wifi_setup.py` はこの対話を自動化する (認証情報は git 管理外のメモのファイルから読む)。
 - ESP32-P4 (Tab5) の WiFi は esp_wifi_remote + esp_hosted が要る。用意できるまで `TKAPP_WIFI=0` (P4 の既定) で通信部分を外してビルドできる (`tk_runner/CMakeLists.txt`)。
 
@@ -451,9 +488,11 @@ Tab5 (360×640、PPA で 2 倍、2026-11-25):
 
 ### 6.4 メモリ
 
-PSRAM が無いので、大きなものは静的に置く (リンク時に使用量が分かる。ヒープは mbedTLS が使う)。2026-11-26 のビルドで .data + .bss が約 429 KB
-(うち RAM に置いた 3D のコード約 100 KB)。ヒープの空きは実測で、起動後 (帯バッファ、TLS の設定、ルート証明書を確保した後) 57 KB、
-TLS の接続中が最小で 35 KB。
+PSRAM が無いので、大きなものは静的に置く (リンク時に使用量が分かる。ヒープは mbedTLS が使う)。2026-11-26 (履歴の時間軸を入れた後) のビルドで
+.data + .bss が約 414 KB (うち RAM に置いた 3D のコード約 78 KB)。ヒープの空きは実測で、起動後 (帯バッファ、TLS の設定、ルート証明書を確保した後) 66 KB、
+TLS の接続中は 44 KB 前後。起動時の完全な握手の瞬間を含めた最大使用量でも、ヒープが一度も届かない領域が 28 KB 残る
+(ログの `heap ... untouched`。sbrk の最高到達点から求める)。
+3D のコードのうち `shapes.cpp` (約 18 KB) を Flash に戻す前は、この余裕が 12 KB しかなかった。
 
 | 用途 | 大きさ |
 |---|---|
@@ -463,7 +502,7 @@ TLS の接続中が最小で 35 KB。
 | テクスチャ | 32 KB |
 | 帯バッファ (32 行 × 2、ヒープ) | 30 KB |
 | パイプラインのスロット (3 件) | 23 KB |
-| 履歴 (2 件) | 15 KB |
+| App のイベントの枠 (3 件) | 23 KB |
 | core1 のスタック | 16 KB |
 | Graphics2D の作業領域 × 2 | 12 KB |
 | イベントの記録 | 9.6 KB |
@@ -478,11 +517,11 @@ TLS の接続中が最小で 35 KB。
   core0 も割り込みを止める。書くのはフレームの最後 (画面やシリアルで設定を変えたとき)。
 - WiFi は WPA2/WPA の PSK (パスフレーズが空なら認証なし)。切れたら 3 秒後に繋ぎ直し、30 秒以上つながらなければ FAILED 表示 (再接続は続ける)。
   静的 IP は ESP-IDF 版と同じ (マスクが空なら /24、DNS が空ならゲートウェイ)。
-- シリアルは USB CDC で、コマンドは ESP-IDF 版と同じ (`wifi`、`status`、`clear`、`help`)。`PICO_STDIO_USB_CONNECTION_WITHOUT_DTR` で DTR を上げない端末にも出す。
+- シリアルは USB CDC で、コマンドは ESP-IDF 版と同じ (`wifi`、`status`、`clear`、`hist [N]`、`live`、`help`)。`PICO_STDIO_USB_CONNECTION_WITHOUT_DTR` で DTR を上げない端末にも出す。
   `tools/wifi_setup.py` と `read_serial.py` はそのまま使えるが、RTS ではリセットされない。
-- `RP2_STDIO_RTT=ON` でログを SWD (SEGGER RTT) に出せる (その場合シリアルのコマンドは使えない)。OpenOCD で
-  `rtt setup <_SEGGER_RTT のアドレス> 0x100 "SEGGER RTT"`、`rtt start`、`rtt server start 19021 0` として TCP で読む。
-  OpenOCD の `reset run` の後に USB ブート (BOOTSEL) に入ってしまうことがあったので、リセットは `flash_swd.sh` (`program ... reset`) で行う。HardFault と固まり (ウォッチドッグ) は次の起動時にログに出る (`diag.cpp`)。
+- `RP2_STDIO_RTT=ON` でログを SWD (SEGGER RTT) に出せる。OpenOCD で
+  `rtt setup <_SEGGER_RTT のアドレス> 0x100 "SEGGER RTT"`、`rtt start`、`rtt server start 19021 0` として TCP で読み書きする
+  (書き込んだ行はシリアルのコマンドになる)。HardFault と固まり (ウォッチドッグ) は次の起動時にログに出る (`diag.cpp`)。
 
 ## 7. 未実装・今後
 

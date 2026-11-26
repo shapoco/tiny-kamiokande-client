@@ -266,6 +266,34 @@ bool readLog(Reader &r, ApiInfo &info) {
   return true;
 }
 
+// history: [[時刻 (UNIX ミリ秒), 種別], ...] (時刻の昇順)。時間軸に出す種別だけを新しい方から HISTORY_CHUNK_MAX 件残す
+bool readHistory(Reader &r, HistoryChunk &out) {
+  if (r.peekMajor() != 4) {
+    r.skip();
+    return r.ok;
+  }
+  size_t n;
+  if (!r.readArrayHead(n)) return false;
+  out.present = true;
+  for (size_t i = 0; i < n && r.ok; i++) {
+    size_t m;
+    if (!r.readArrayHead(m) || m < 2) return false;
+    int64_t ms = 0, kind = -1;
+    r.readInt(ms);
+    r.readInt(kind);
+    for (size_t k = 2; k < m && r.ok; k++) r.skip();
+    if (!r.ok) return false;
+    if (ms > out.lastMs) out.lastMs = ms;
+    if (!historyKindShown((int)kind)) continue;
+    if (out.count == HISTORY_CHUNK_MAX) {
+      for (int k = 1; k < out.count; k++) out.items[k - 1] = out.items[k];
+      out.count--;
+    }
+    out.items[out.count++] = {ms, (uint8_t)kind};
+  }
+  return r.ok;
+}
+
 }  // namespace
 
 Cell cellFromRgb565(uint16_t v) {
@@ -323,6 +351,8 @@ ApiStatus decodeApiResponse(const uint8_t *buf, size_t len, EventRecord &rec, Ap
       readFit(r, rec.fit);
     } else if (r.keyIs(k, kl, "log")) {
       readLog(r, info);
+    } else if (r.keyIs(k, kl, "history")) {
+      readHistory(r, info.history);
     } else {
       r.skip();
     }

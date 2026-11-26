@@ -15,12 +15,12 @@ idf_component_register(
         "${TKAPP_APPCORE}/src/cbor.cpp"
         "${TKAPP_APPCORE}/src/eventlog.cpp"
         "${TKAPP_APPCORE}/src/sync.cpp"
+        "${TKAPP_APPCORE}/src/history.cpp"
     INCLUDE_DIRS "${TKAPP_APPCORE}/include"
     REQUIRES ${SHAPOGFX_COMPONENT}
 )
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra)
-# 履歴機能は MCU では使わない (画面をシンプルにする)。idf.py -DTKAPP_HISTORY=1 build で有効
-if(NOT DEFINED TKAPP_HISTORY)
-    set(TKAPP_HISTORY 0)
-endif()
-target_compile_definitions(${COMPONENT_LIB} PUBLIC TKAPP_HISTORY=${TKAPP_HISTORY})
+# 版 (リポジトリ直下の version.txt)。画面の 3D の表示の右下に出す
+file(STRINGS ${TKAPP_APPCORE}/../../version.txt TKAPP_VERSION LIMIT_COUNT 1)
+target_compile_definitions(${COMPONENT_LIB} PRIVATE TKAPP_VERSION="${TKAPP_VERSION}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${TKAPP_APPCORE}/../../version.txt)

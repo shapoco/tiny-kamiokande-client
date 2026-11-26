@@ -3,7 +3,7 @@
 //
 //   tkapp_host [--size WxH] [--fps N] [--strip ROWS] [--interval SEC] [--out DIR]
 //              [--snap t1,t2,...] [--seconds T] [--drag X0,Y0,X1,Y1,T0,T1] [--key NAME,T]
-//              [--tap X,Y,T] [--settings] [--bench] [--viewers N] [--single-touch] file.cbor...
+//              [--tap X,Y,T] [--settings] [--bench] [--viewers N] [--single-touch] [--hist-demo N] file.cbor...
 //
 //   --interval  ファイルを流し込む間隔 (既定 15 秒。0 なら全部を t=0 で)
 //   --snap      PNG を書く時刻。--out のディレクトリに frame_<秒>.png
@@ -15,6 +15,10 @@
 //   --single-touch  シングルタッチの機種と同じ操作にする (ダブルタップで拡大、長押しで縮小。
 //               ダブルタップは --tap を 2 回、長押しは同じ位置への --drag で試す)
 //   --viewers   左下の接続数をこの値で表示する (既定は最後に読んだ応答の clients。無ければ出さない)
+//   --hist-demo 履歴の時間軸に、過去 1 時間に等間隔で N 個の点を置く (内容は読み込んだファイルを順に使う)
+//
+// サーバ時刻は 1800000000000 ms + 経過時間とする。流し込んだイベントのうち時間軸に出す種別 (停止、発生) は
+// 流し込んだ時刻で履歴の一覧にも入る。時間軸の点を選ぶと、対応するファイルの内容を次のフレームで再生する
 //
 // 応答にイベントの記録 (api.php?fmt=bin&log=-480 の log) があれば、取り込んで最下部に描く
 
@@ -40,7 +44,7 @@ constexpr size_t ARENA_BYTES = 96 * 1024;
 
 alignas(8) uint8_t g_arena[ARENA_BYTES];
 uint16_t g_fb[MAX_W * MAX_H];  // RGB565_SWAPPED
-EventRecord g_history[HISTORY_MAX];
+EventRecord g_records[RECORD_SLOTS];
 uint16_t g_texPixels[TEXTURE_PIXELS];
 EventRecord g_incoming;
 EventLog g_log;
@@ -58,6 +62,10 @@ class HostPlatform : public Platform {
   WifiState wifiState() override { return state_; }
   bool fetching() override { return fetching_; }
   int viewerCount() override { return viewers_; }
+  int64_t displayTimeMs() override { return displayMs_; }
+  void requestHistory(int64_t ms) override { requestedMs_ = ms; }
+  int64_t displayMs_ = -1;
+  int64_t requestedMs_ = 0;
   bool fetching_ = false;
   int viewers_ = -1;
   void log(const char *msg) override { std::printf("app: %s\n", msg); }
@@ -190,6 +198,7 @@ int main(int argc, char **argv) {
   std::vector<KeyEvent> keys;
   std::vector<const char *> files;
   bool bench = false, settings = false, singleTouch = false;
+  int histDemo = 0;
   int viewersOpt = -1, lastClients = -1;
   for (int i = 1; i < argc; i++) {
     const char *a = argv[i];
@@ -208,6 +217,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(a, "--viewers")) viewersOpt = atoi(next());
     else if (!strcmp(a, "--settings")) settings = true;
     else if (!strcmp(a, "--single-touch")) singleTouch = true;
+    else if (!strcmp(a, "--hist-demo")) histDemo = atoi(next());
     else if (!strcmp(a, "--snap")) {
       const char *s = next();
       while (*s) {
@@ -248,8 +258,8 @@ int main(int argc, char **argv) {
 
   HostPlatform platform;
   Buffers buffers;
-  buffers.history = g_history;
-  buffers.historyCapacity = HISTORY_MAX;
+  buffers.records = g_records;
+  buffers.recordCapacity = RECORD_SLOTS;
   buffers.texturePixels = g_texPixels;
   g_app.setMultiTouch(!singleTouch);
   if (!g_app.init(w, h, buffers, &platform, g_arena, sizeof g_arena)) {
@@ -286,6 +296,30 @@ int main(int argc, char **argv) {
     records.push_back(rec);
   }
   platform.viewers_ = viewersOpt >= 0 ? viewersOpt : lastClients;
+
+  // 履歴の一覧 (時刻と、内容に使うファイルの番号)
+  constexpr int64_t BASE_MS = 1800000000000LL;
+  struct HostHist {
+    int64_t ms;
+    int rec;
+  };
+  std::vector<HostHist> hist;
+  HistoryList histList;
+  auto addHist = [&](int64_t ms, uint8_t kind, int rec) {
+    HistoryChunk c;
+    c.present = true;
+    c.lastMs = ms;
+    if (historyKindShown(kind)) {
+      c.items[c.count++] = {ms, kind};
+      hist.push_back({ms, rec});
+    }
+    histList.merge(c, BASE_MS);
+  };
+  for (int k = histDemo; k >= 1 && !records.empty(); k--) {
+    static const uint8_t KINDS[] = {LOG_STOPPING, LOG_INSIDE, LOG_CONTAINED};
+    addHist(BASE_MS - HISTORY_SPAN_MS * k / (histDemo + 1), KINDS[k % 3], k % (int)records.size());
+  }
+  g_app.updateHistory(histList);
   if (g_log.nowSlot() > 0) g_app.updateLog(g_log);
 
 
@@ -298,9 +332,23 @@ int main(int argc, char **argv) {
   for (int frame = 0; frame <= frames; frame++) {
     const float t = frame * dt;
     // データの投入
+    platform.displayMs_ = BASE_MS + (int64_t)(t * 1000);
     while (nextRecord < records.size() && t + 1e-4f >= interval * nextRecord) {
+      const FitResult &f = records[nextRecord]->fit;
+      const uint8_t kind = !f.show ? (uint8_t)LOG_UNFIT : (uint8_t)(LOG_THROUGH + (int)f.kind);
+      addHist(platform.displayMs_ - 1, kind, (int)nextRecord);
+      g_app.updateHistory(histList);
       g_app.pushEvent(*records[nextRecord]);
       nextRecord++;
+    }
+    // 頼まれた履歴は次のフレームで渡す
+    if (platform.requestedMs_) {
+      const int64_t ms = platform.requestedMs_;
+      platform.requestedMs_ = 0;
+      int rec = -1;
+      for (const HostHist &hh : hist) if (hh.ms == ms) rec = hh.rec;
+      if (rec >= 0) g_app.showHistoryEvent(*records[rec], ms);
+      else g_app.historyFailed(ms);
     }
     // 取得中のまね: 次の投入の前 1.5 秒
     platform.fetching_ = interval > 0 && nextRecord < records.size() && interval * nextRecord - t < 1.5f;

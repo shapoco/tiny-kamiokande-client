@@ -8,6 +8,7 @@
 #include <cstdint>
 
 #include "tkapp/event.hpp"
+#include "tkapp/history.hpp"
 
 namespace tkapp {
 
@@ -28,6 +29,8 @@ struct ApiInfo {
   int64_t logNow = -1;
   const uint8_t *logRows = nullptr;
   size_t logBytes = 0;
+  // 履歴の一覧 (?hist= を付けたときの history)。時間軸に出す種別だけ
+  HistoryChunk history;
 };
 
 // buf の応答を rec に展開する。FEW_LIT でも rec は埋まる。SERVER_ERROR / MALFORMED では rec は不定。
