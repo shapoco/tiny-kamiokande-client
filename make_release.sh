@@ -79,6 +79,7 @@ build_pico pico_restouch_lcd_2_8
 
 cp README.md README.ja.md "${dest_dir}/"
 cp -r image "${dest_dir}/"
+cp LICENSE "${dest_dir}/"
 
 pushd releases > /dev/null
   zip -r "${release_name}.zip" "${release_name}"
