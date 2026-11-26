@@ -16,17 +16,22 @@ PC やスマートフォン向けの Web 版は https://www.shapoco.net/tiny-kam
 
 - M5Stack CoreS3 (ESP32-S3)
 - M5Stack Tab5 (ESP32-P4 + ESP32-C6)
+- Waveshare Pico-ResTouch-LCD-2.8 + Raspberry Pi Pico 2 W (RP2350)
 - ホスト版 (PC。保存した応答からフレームを PNG に書き出す確認用)
 
 ## コンパイル済みバイナリ
 
 コンパイル済みのファームは [Releases](https://github.com/shapoco/tiny-kamiokande-client/releases) からダウンロードできます。
-zip を展開し、機種のディレクトリにある `upload.sh` で書き込みます ([esptool](https://github.com/espressif/esptool) が必要です)。
+zip を展開し、機種のディレクトリにある `upload.sh` で書き込みます (M5Stack は [esptool](https://github.com/espressif/esptool)、
+Pico は [picotool](https://github.com/raspberrypi/picotool) が必要です)。
 
 ```sh
 m5cores3/upload.sh /dev/ttyACM0   # CoreS3
 m5tab5/upload.sh /dev/ttyACM0     # Tab5
+pico_restouch_lcd_2_8/upload.sh   # Pico-ResTouch-LCD-2.8 + Pico 2 W
 ```
+
+Pico は picotool を使わず、BOOTSEL ボタンを押しながら USB を接続して現れるドライブに `.uf2` をコピーしても書き込めます。
 
 Tab5 は書き込んだ後に C6 の更新が必要です (下記)。
 
@@ -34,6 +39,7 @@ Tab5 は書き込んだ後に C6 の更新が必要です (下記)。
 
 - [ESP-IDF](https://github.com/espressif/esp-idf) 5.5 (環境変数 `IDF_ROOT`、既定 `~/esp/5.5/esp-idf`)
 - [ShapoGFX](https://github.com/shapoco/shapo-gfx) のクローン (環境変数 `SHAPOGFX_PATH`、既定 `~/shapo-gfx`)
+- Pico 版は [Pico SDK](https://github.com/raspberrypi/pico-sdk) 2.2 (環境変数 `PICO_SDK_PATH`、既定 `~/pico/pico-sdk`)、Arm GNU Toolchain、picotool
 
 ## ビルドと書き込み
 
@@ -41,6 +47,8 @@ Tab5 は書き込んだ後に C6 の更新が必要です (下記)。
 impl/m5cores3/run.sh /dev/ttyACM0   # CoreS3 (ポートは環境に合わせる)
 impl/m5tab5/run.sh /dev/ttyACM0     # Tab5
 impl/m5cores3/build.sh -DTKAPP_DEMO=1   # 通信せず埋め込みのサンプルを表示するデモモード
+impl/pico_restouch_lcd_2_8/build.sh     # Pico-ResTouch-LCD-2.8 + Pico 2 W (-DTKAPP_DEMO=ON でデモモード)
+impl/pico_restouch_lcd_2_8/flash.sh     # picotool で書き込む
 ```
 
 Tab5 は出荷時の ESP32-C6 のファームのままでは HTTPS が通らないため、最初に C6 の更新が必要です。
@@ -49,7 +57,9 @@ Tab5 のファームには C6 の更新用ファームが埋め込まれてお�
 ## WiFi の設定
 
 画面右上の WiFi アイコンをタップすると設定画面が開きます。USB シリアルのコンソールで `wifi` コマンドを使って設定することもできます。
-設定は本体の NVS に保存されます。
+設定は本体の NVS (Pico は Flash の最後のセクタ) に保存されます。
+
+Pico-ResTouch-LCD-2.8 はシングルタッチなので、ピンチの代わりに検出器のダブルタップで拡大、長押しで縮小します。
 
 ## ドキュメント
 

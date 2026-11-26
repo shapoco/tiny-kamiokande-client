@@ -122,14 +122,14 @@ const uint8_t PALETTE_RGB[CELL_PALETTE_COUNT][3] = {
 };
 
 // 面の pixels (RGB565 リトルエンディアン) をセルに変換する。点灯数を返す
-int convertPlane(const uint8_t *px, size_t bytes, int w, int h, Cell *dst) {
+int convertPlane(const uint8_t *px, size_t bytes, int w, int h, PmtCells &dst, int base) {
   const int n = w * h;
   if (bytes < (size_t)n * 2) return -1;
   int lit = 0;
   for (int i = 0; i < n; i++) {
     const uint16_t v = (uint16_t)(px[2 * i] | (px[2 * i + 1] << 8));
     const Cell c = cellFromRgb565(v);
-    dst[i] = c;
+    dst.set(base + i, c);
     if (c) lit++;
   }
   return lit;
@@ -339,10 +339,10 @@ ApiStatus decodeApiResponse(const uint8_t *buf, size_t len, EventRecord &rec, Ap
   out.timestampMs = timestampMs > 0 ? timestampMs : timestamp * 1000;
   out.crc32 = (uint32_t)crc;
   int lit = 0;
-  const int side = convertPlane(planes[1].pixels, planes[1].bytes, SIDE_COLS, SIDE_ROWS, out.cells);
-  const int top = convertPlane(planes[0].pixels, planes[0].bytes, CAP_COLS, CAP_COLS, out.cells + N_SIDE);
+  const int side = convertPlane(planes[1].pixels, planes[1].bytes, SIDE_COLS, SIDE_ROWS, out.cells, 0);
+  const int top = convertPlane(planes[0].pixels, planes[0].bytes, CAP_COLS, CAP_COLS, out.cells, N_SIDE);
   const int bottom =
-      convertPlane(planes[2].pixels, planes[2].bytes, CAP_COLS, CAP_COLS, out.cells + N_SIDE + N_CAP);
+      convertPlane(planes[2].pixels, planes[2].bytes, CAP_COLS, CAP_COLS, out.cells, N_SIDE + N_CAP);
   if (side < 0 || top < 0 || bottom < 0) return info.status = ApiStatus::MALFORMED;
   lit = side + top + bottom;
   out.litCount = (uint16_t)lit;

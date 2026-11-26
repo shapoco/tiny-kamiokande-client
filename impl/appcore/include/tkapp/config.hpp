@@ -29,9 +29,13 @@ enum HideReason : uint8_t {
   HIDE_OD = 5,         // 外水槽のヒットと不一致
 };
 
-// テクスチャ (2 のべき乗。1 PMT = 1 テクセル)
-constexpr int SIDE_TEX_W = 256, SIDE_TEX_H = 64;
-constexpr int CAP_TEX_W = 64, CAP_TEX_H = 64;
+// テクスチャ (2 のべき乗。1 PMT = 1 テクセル)。3 面を 1 枚に入れる: 側面 150×51 を左上に、
+// 上面と底面 (48×48) をその右の空き (106 列) に並べる。間は黒の隙間 (テクスチャの読み出しの誤差でにじまないよう)
+constexpr int FACE_TEX_W = 256, FACE_TEX_H = 64;
+constexpr int CAP_TOP_TEX_X = 152, CAP_BOTTOM_TEX_X = 204;  // 上面・底面の左端の列 (上端は 0 行)
+static_assert(SIDE_COLS + 2 <= CAP_TOP_TEX_X && CAP_TOP_TEX_X + CAP_COLS + 4 <= CAP_BOTTOM_TEX_X &&
+                  CAP_BOTTOM_TEX_X + CAP_COLS <= FACE_TEX_W && CAP_COLS <= FACE_TEX_H && SIDE_ROWS <= FACE_TEX_H,
+              "the faces do not fit in the texture");
 
 // 円筒の分割数。描画の時間はスキャンラインごとのスパン数 (≒ 見えている三角形の数) に比例するので少なめにする。
 // 上下面は分割せず正方形 2 枚で描く (円の外はテクスチャが黒で、加算合成なので何も足されない)
@@ -152,6 +156,13 @@ constexpr int UI_ICON_MIN = 24;          // WiFi アイコンの大きさの下�
 constexpr int UI_ICON_DIV = 20;          // 大きさは画面の短辺 / この値 (Tab5 の 360×640 では下限と同じ 24 になる)
 constexpr int TAP_MAX_MOVE_PX = 8;       // タップとみなす移動量の上限
 constexpr float TAP_MAX_SEC = 0.5f;
+// シングルタッチの機種 (setMultiTouch(false)) のズーム: 3D の表示をダブルタップで拡大、長押しで縮小
+constexpr float DOUBLE_TAP_SEC = 0.4f;     // 1 回目のタップを離してから 2 回目を押すまで
+constexpr int DOUBLE_TAP_MAX_DIST_PX = 24; // 1 回目と 2 回目の位置の差の上限
+constexpr float DOUBLE_TAP_ZOOM = 0.6f;    // 1 回の拡大で距離に掛ける値
+constexpr float HOLD_ZOOM_SEC = 0.5f;      // 動かさずにこれだけ押し続けたら縮小を始める
+constexpr float HOLD_ZOOM_RATE = 1.0f;     // 縮小の速さ (1 秒あたりの距離倍率の対数)
+static_assert(HOLD_ZOOM_SEC >= TAP_MAX_SEC, "a hold must not end as a tap");
 constexpr uint32_t COLOR_KIND_THROUGH = 0xFF2070E0u;
 constexpr uint32_t COLOR_KIND_STOPPING = 0xFFE0A020u;
 constexpr uint32_t COLOR_KIND_INSIDE = 0xFFE03030u;

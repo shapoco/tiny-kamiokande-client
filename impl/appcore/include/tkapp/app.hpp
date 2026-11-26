@@ -93,6 +93,7 @@ class App {
   bool init(int w, int h, const Buffers &buffers, Platform *platform, void *arena, size_t arenaBytes,
             int renderContexts = 1);
 
+  // false: シングルタッチの機種。ピンチの代わりに 3D の表示のダブルタップで拡大、長押しで縮小する
   void setMultiTouch(bool on) { multiTouch_ = on; }
   void setWifiConfig(const WifiConfig &cfg) { wifi_ = cfg; }
   const WifiConfig &wifiConfig() const { return wifi_; }
@@ -243,7 +244,7 @@ class App {
   // 表示の切り替え
   TexPhase texPhase_ = TexPhase::BLACK;
   float texBrightness_ = 0;
-  const Cell *pendingCells_ = nullptr;
+  const PmtCells *pendingCells_ = nullptr;
   bool hasPending_ = false;
   Intro intro_;
   bool introActive_ = false;
@@ -309,8 +310,13 @@ class App {
     float sec = 0;
     bool moved = false;
     int button = -1;  // 押したボタン
+    bool secondTap = false;  // ダブルタップの 2 回目として押した (シングルタッチのズーム)
+    bool holding = false;    // 長押しで縮小している
   };
   Pointer ptr_[MAX_POINTERS];
+  // 直前のタップ (3D の表示の上。ダブルタップの判定用)
+  float lastTapSec_ = -1e9f;
+  int lastTapX_ = 0, lastTapY_ = 0;
   int pinchDist0_ = 0;
   float pinchCamDist0_ = 0;
   bool keyHeld_[(int)Key::COUNT] = {};

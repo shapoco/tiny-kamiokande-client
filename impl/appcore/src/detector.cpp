@@ -71,9 +71,7 @@ void Detector::cellColor(Cell c, uint8_t rgb[3]) {
 }
 
 void Detector::init(uint16_t *pixels) {
-  sidePixels_ = pixels;
-  topPixels_ = pixels + SIDE_TEX_W * SIDE_TEX_H;
-  bottomPixels_ = topPixels_ + CAP_TEX_W * CAP_TEX_H;
+  pixels_ = pixels;
   for (int c = 0; c < SIDE_COLS; c++) {
     const float th = sideColumnAngle(c);
     colX_[c] = RADIUS * sinf(th);
@@ -85,14 +83,13 @@ void Detector::init(uint16_t *pixels) {
     capX_[i] = (2 * t - 1) * RADIUS;
     capZ_[i] = (1 - 2 * t) * RADIUS;  // 上面の z。底面は符号を反転する
   }
+  // 隙間と使わない領域は黒のまま (updateTextures() は書かない)
   memset(pixels, 0, sizeof(uint16_t) * TEXTURE_PIXELS);
-  sideTex_ = g2::makeTexture(g2::PixelFormat::RGB565_SWAPPED, SIDE_TEX_W, SIDE_TEX_H, sidePixels_);
-  topTex_ = g2::makeTexture(g2::PixelFormat::RGB565_SWAPPED, CAP_TEX_W, CAP_TEX_H, topPixels_);
-  bottomTex_ = g2::makeTexture(g2::PixelFormat::RGB565_SWAPPED, CAP_TEX_W, CAP_TEX_H, bottomPixels_);
+  tex_ = g2::makeTexture(g2::PixelFormat::RGB565_SWAPPED, FACE_TEX_W, FACE_TEX_H, pixels_);
   cells_ = nullptr;
 }
 
-void Detector::setCells(const Cell *cells) { cells_ = cells; }
+void Detector::setCells(const PmtCells *cells) { cells_ = cells; }
 
 void Detector::updateTextures(float brightness, const float *center, float revealRadius, float blur) {
   // 色 → 明るさ係数を掛けた RGB565 の表。係数は 1/64 刻み
@@ -126,22 +123,22 @@ void Detector::updateTextures(float brightness, const float *center, float revea
   int i = 0;
   for (int c = 0; c < SIDE_COLS; c++) {
     const float x = colX_[c], z = colZ_[c];
-    uint16_t *dst = sidePixels_ + c;
-    for (int r = 0; r < SIDE_ROWS; r++, i++, dst += SIDE_TEX_W) {
-      const Cell cell = cells_ ? cells_[i] : 0;
+    uint16_t *dst = pixels_ + c;
+    for (int r = 0; r < SIDE_ROWS; r++, i++, dst += FACE_TEX_W) {
+      const Cell cell = cells_ ? cells_->get(i) : 0;
       *dst = lut[factor(x, rowY_[r], z)][cell];
     }
   }
   for (int face = 0; face < 2; face++) {
     const bool top = face == 0;
     const float y = top ? HEIGHT / 2 : -HEIGHT / 2;
-    uint16_t *pixels = top ? topPixels_ : bottomPixels_;
+    uint16_t *pixels = pixels_ + (top ? CAP_TOP_TEX_X : CAP_BOTTOM_TEX_X);
     for (int x = 0; x < CAP_COLS; x++) {
       const float px = capX_[x];
       uint16_t *dst = pixels + x;
-      for (int yy = 0; yy < CAP_COLS; yy++, i++, dst += CAP_TEX_W) {
+      for (int yy = 0; yy < CAP_COLS; yy++, i++, dst += FACE_TEX_W) {
         const float pz = top ? capZ_[yy] : -capZ_[yy];
-        const Cell cell = cells_ ? cells_[i] : 0;
+        const Cell cell = cells_ ? cells_->get(i) : 0;
         // 円の外は描かない (黒のまま)
         const float dx = px / RADIUS, dz = pz / RADIUS;
         *dst = (dx * dx + dz * dz > 1.0f) ? 0 : lut[factor(px, y, pz)][cell];

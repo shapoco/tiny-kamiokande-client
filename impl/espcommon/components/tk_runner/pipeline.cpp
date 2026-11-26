@@ -15,6 +15,7 @@
 #include "net.hpp"
 #include "tkapp/cbor.hpp"
 #include "tkapp/config.hpp"
+#include "tkapp/sync.hpp"
 
 // CMakeLists.txt で埋め込むデモ用のデータ
 extern const uint8_t g_s1Start[] asm("_binary_s1_cbor_start");
@@ -29,7 +30,6 @@ namespace tkrunner {
 namespace {
 
 constexpr int SLOTS = 5;  // 表示待ち (15 秒 / 9 秒 ≒ 2 件) + 取得中の 1 件 + 余裕 2 件
-constexpr int CLOCK_SAMPLES = 10;
 constexpr size_t FETCH_BUF_BYTES = 96 * 1024;  // api.php?fmt=bin は約 26 KB
 constexpr uint32_t STACK_BYTES = 12 * 1024;  // 通信 (TLS の握手) と CBOR の展開
 
@@ -49,50 +49,26 @@ volatile int g_viewers = -1;          // 最後に受け取った接続数 (api.
 volatile int64_t g_viewersAtUs = 0;   // それを受け取った時刻
 constexpr int64_t VIEWERS_STALE_US = 60 * 1000000LL;  // これより古い接続数は出さない (通信が途絶えたとき)
 
-// サーバ時刻とのずれと、表示の遅れのランプ。パイプラインのタスク (core1) が書き、pipelinePoll (core0) が読む
-portMUX_TYPE g_clockMux = portMUX_INITIALIZER_UNLOCKED;
-bool g_clockValid = false;
-int64_t g_clockOffsetMs = 0;  // サーバ時刻 (UNIX ms) - esp_timer (ms)
-int64_t g_rampStartUs = -1;   // 遅れのランプの開始 (最初のイベントを受け取った時刻)。-1 なら未開始
+// 表示待ちのキューの時刻の判定 (tkapp/sync.hpp)。パイプラインのタスク (core1) が標本を入れ、
+// pipelinePoll (core0) が判定するので g_syncMux で排他する
+portMUX_TYPE g_syncMux = portMUX_INITIALIZER_UNLOCKED;
+tkapp::DisplaySync g_sync;
 
-// ずれの標本 (タスクだけが触る)。要求を送ってからヘッダが届くまでが最も短かった標本を使う
-struct ClockSample {
-  int64_t waitUs, offsetMs;
-};
-ClockSample g_clockSamples[CLOCK_SAMPLES];
-int g_clockCount = 0, g_clockNext = 0;
-
-// サーバは応答を書き出す直前に serverTimeMs を記録するので、ヘッダが届いた時刻と比べる。
-// (keep-alive なしで毎回 TLS の握手から始めるので、Web 版のような往復の中点は握手の分だけずれる)。誤差は下りの片道程度
+// 毎回 TLS の握手から始める (keep-alive なし) ので、Web 版のような往復の中点は握手の分だけずれる。
+// ヘッダが届いた時刻との差を使う (誤差は下りの片道程度。DisplaySync::noteServerTime)
 void noteServerTime(int64_t serverTimeMs, const NetTiming &t) {
-  if (serverTimeMs <= 0 || t.headersUs <= 0) return;
-  g_clockSamples[g_clockNext] = {t.headersUs - t.sentUs, serverTimeMs - t.headersUs / 1000};
-  g_clockNext = (g_clockNext + 1) % CLOCK_SAMPLES;
-  if (g_clockCount < CLOCK_SAMPLES) g_clockCount++;
-  int best = 0;
-  for (int i = 1; i < g_clockCount; i++)
-    if (g_clockSamples[i].waitUs < g_clockSamples[best].waitUs) best = i;
-  taskENTER_CRITICAL(&g_clockMux);
-  g_clockOffsetMs = g_clockSamples[best].offsetMs;
-  g_clockValid = true;
-  taskEXIT_CRITICAL(&g_clockMux);
+  taskENTER_CRITICAL(&g_syncMux);
+  g_sync.noteServerTime(serverTimeMs, t.sentUs, t.headersUs);
+  taskEXIT_CRITICAL(&g_syncMux);
 }
 
 // 表示の時刻が来たか。デモ、サーバ時刻が分からない (古いサーバ) ときはすぐ表示する
 bool isDue(const tkapp::EventRecord &rec) {
-  if (g_cfg.demo || rec.data.timestampMs <= 0) return true;
-  taskENTER_CRITICAL(&g_clockMux);
-  const bool valid = g_clockValid;
-  const int64_t offsetMs = g_clockOffsetMs, rampStartUs = g_rampStartUs;
-  taskEXIT_CRITICAL(&g_clockMux);
-  if (!valid || rampStartUs < 0) return true;
-  const int64_t nowUs = esp_timer_get_time();
-  float ramp = (float)(nowUs - rampStartUs) / (tkapp::QUEUE_RAMP_SEC * 1e6f);
-  if (ramp > 1) ramp = 1;
-  if (ramp < 0) ramp = 0;
-  const int64_t delayMs = (int64_t)(tkapp::QUEUE_DELAY_SEC * 1000.0f * ramp);
-  const int64_t waitMs = rec.data.timestampMs + delayMs - (nowUs / 1000 + offsetMs);
-  return waitMs <= 0 || waitMs > (int64_t)(tkapp::QUEUE_DELAY_SEC * 2000.0f);  // 異常に先の時刻なら待たない
+  if (g_cfg.demo) return true;
+  taskENTER_CRITICAL(&g_syncMux);
+  const bool due = g_sync.isDue(rec.data.timestampMs, esp_timer_get_time());
+  taskEXIT_CRITICAL(&g_syncMux);
+  return due;
 }
 
 struct Sample {
@@ -187,11 +163,9 @@ void pipelineTask(void *) {
     }
     g_status.lastFitMs = rec->fit.fitMs;
     g_status.ok++;
-    if (g_rampStartUs < 0) {
-      taskENTER_CRITICAL(&g_clockMux);
-      g_rampStartUs = esp_timer_get_time();
-      taskEXIT_CRITICAL(&g_clockMux);
-    }
+    taskENTER_CRITICAL(&g_syncMux);
+    g_sync.startRamp(esp_timer_get_time());
+    taskEXIT_CRITICAL(&g_syncMux);
     xQueueSend(g_readyQ, &rec, portMAX_DELAY);
   }
 }

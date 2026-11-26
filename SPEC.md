@@ -1,7 +1,7 @@
 # Tiny Kamiokande クライアント (MCU 版) 仕様
 
 Super-Kamiokande Realtime Monitor が公開しているイベントディスプレイ画像を Tiny Kamiokande のサーバ (api.php) が解析したデータを取得し、
-検出器の 3D モデルに貼り付けて M5Stack CoreS3 / Tab5 などの MCU で表示する。表示は ShapoGFX で描く。
+検出器の 3D モデルに貼り付けて M5Stack CoreS3 / Tab5、Raspberry Pi Pico 2 W (Waveshare Pico-ResTouch-LCD-2.8) などの MCU で表示する。表示は ShapoGFX で描く。
 軌跡の推定はサーバが行い、api.php の応答の `fit` で受け取る (2.3。2026-11-25 までは MCU 上で推定していた)。
 同じサーバを使う Web 版 (ブラウザ向けの 3D ビューア) があり、見た目と演出はそれに合わせてある (3 章)。
 
@@ -19,11 +19,14 @@ Super-Kamiokande Realtime Monitor が公開しているイベントディスプ�
 | `impl/espcommon/samples/` | デモモードで表示する埋め込みの応答 (CBOR)。合成イベント (2.5) |
 | `impl/m5common/components/m5platform/` | M5Stack 共通のボード層。M5Unified での起動、タッチ、パネル転送 (CoreS3: SPI DMA、Tab5: PPA) |
 | `impl/m5cores3/`、`impl/m5tab5/` | ESP-IDF のプロジェクト。設定値 (回転、帯の高さ、拡大率) だけを持つ |
+| `impl/rp2common/` | Pico SDK (RP2350 + CYW43439) 版の共通部分 (6 章)。フレームループ、WiFi と HTTPS、パイプライン、シリアル、設定の保存、ボードヘッダ。クロック、診断、パネル、抵抗膜タッチは texbreakout の `impl/rp2common/` から持ってきたもの |
+| `impl/pico_restouch_lcd_2_8/` | Pico SDK のプロジェクト (Waveshare Pico-ResTouch-LCD-2.8 + Pico 2 W)。抵抗膜タッチの受け渡しだけを持つ |
 | `tools/json2cbor.mjs` | api.php の JSON 応答 (または Web 版の C キーのダンプ) を `?fmt=bin` と同じ CBOR にする (ホスト版の入力用) |
 | `tools/read_serial.py`, `tools/wifi_setup.py` | ボードをリセットしてシリアル出力を読む、シリアルの `wifi` コマンドで WiFi を設定する (5.3) |
 | `tmp.*`、`tmp.*/` | 手元の作業用 (git 管理外) |
 
-環境変数: `IDF_ROOT` (ESP-IDF 5.5 のディレクトリ、既定 `${HOME}/esp/5.5/esp-idf`)、`SHAPOGFX_PATH` (ShapoGFX のクローン、既定 `${HOME}/shapo-gfx`)。
+環境変数: `IDF_ROOT` (ESP-IDF 5.5 のディレクトリ、既定 `${HOME}/esp/5.5/esp-idf`)、`SHAPOGFX_PATH` (ShapoGFX のクローン、既定 `${HOME}/shapo-gfx`)、
+`PICO_SDK_PATH` (Pico SDK 2.2、既定 `${HOME}/pico/pico-sdk`)。
 
 ### ビルド
 
@@ -38,6 +41,11 @@ node tools/json2cbor.mjs report.json out.cbor                           # JSON �
 impl/m5cores3/build.sh                 # ビルド (-DTKAPP_DEMO=1 でデモモード)
 impl/m5cores3/run.sh /dev/ttyACM1      # ビルドと書き込み
 impl/m5cores3/monitor.sh               # シリアルログ
+
+# Pico-ResTouch-LCD-2.8 + Pico 2 W
+impl/pico_restouch_lcd_2_8/build.sh                  # build/tiny_kamiokande.uf2 (-DTKAPP_DEMO=ON でデモモード)
+impl/pico_restouch_lcd_2_8/flash.sh                  # picotool で書き込む (動作中ならリブートさせる)
+impl/pico_restouch_lcd_2_8/flash_swd.sh              # SWD (Debug Probe、OpenOCD) で書き込む
 ```
 
 ### リリース
@@ -46,6 +54,8 @@ impl/m5cores3/monitor.sh               # シリアルログ
 
 - CoreS3 と Tab5 を `impl/<機種>/build-release/` に `sdkconfig.defaults` だけからクリーンビルドする
   (手元の `build/`、`sdkconfig`、デモモードの指定は使わない。ログは `impl/<機種>/build-release.log`)。
+  Pico-ResTouch-LCD-2.8 も `build-release/` にクリーンビルドし、`.uf2` を `tiny_kamiokande_pico_restouch_lcd_2_8.uf2` として置く
+  (`upload.sh` は picotool で書く。無ければ BOOTSEL で現れるドライブにコピーする)。
 - `idf.py merge-bin` で 0x0 に書く 1 ファイルにまとめ、`releases/tiny-kamiokande-client_v<版>/<機種>/tiny_kamiokande_<機種>.bin` に置く。
   同じディレクトリに `assets/release/<機種>/` の中身 (esptool で書き込む `upload.sh [PORT] [BAUD]`) をコピーする。
   最上位に README.md、README.ja.md と `BUILD_INFO.txt` (版、このリポジトリと ShapoGFX のコミット、書き込み方) を置き、zip にする。
@@ -216,11 +226,12 @@ MCU 版での実装は 5.1。
 ### 4.1 データ (`event.hpp`、`cbor.hpp`)
 
 - `EventData`: 1 件のイベント。PMT ごとの `Cell` (0 は未点灯、1..16 は凡例の色番号 + 1。並びは api.php の `pixels` と同じ)、取得時刻、CRC、点灯数、OD ヒットの数 (ログ用。OD は描かない)。
+  セルは `PmtCells` に 1 個 5 bit で詰める (色番号 4 bit を 1 バイトに 2 個 + 点灯 1 bit。1 件 12.3 KB → 7.7 KB。PSRAM の無い RP2350 のため。2026-11-26)。
 - `decodeApiResponse()`: `api.php?fmt=bin` の CBOR (2.2) を `EventRecord` に展開する最小のデコーダ。鍵が決まっている応答専用で、不定長と浮動小数は扱わない。
   `ApiStatus` は OK / MALFORMED / SERVER_ERROR / FEW_LIT (点灯が `MIN_LIT_PMTS` 未満)。
 - `FitResult`: 応答の `fit` (整数だけの小さな形) から作る。種類、始点・侵入点・終点・出口、相関、表示するか (`hide` が 0)、サーバでの推定時間。
   `fit` が無い・null (サーバが推定できなかった) なら表示しない (`hideReason` = `HIDE_NO_RESULT`)。
-- `EventRecord` = `EventData` + `FitResult` が履歴の 1 件。実体は大きい (約 12 KB) のでプラットフォームが置き場所 (`Buffers::history`、PSRAM 可) を渡す。
+- `EventRecord` = `EventData` + `FitResult` が履歴の 1 件。実体は大きい (約 8 KB) のでプラットフォームが置き場所 (`Buffers::history`、PSRAM 可) を渡す。
 - イベントの記録 (`eventlog.hpp`。2.4): 応答の `log` (`?log=` を付けたときだけ) は `ApiInfo` の `logNow` / `logRows` / `logBytes` に入る
   (`SERVER_ERROR` でも入る。`logRows` は受信バッファ内を指す)。`EventLog` は直近 `LOG_MAX_COLS` (80) 時間 = 480 枠を枠の番号 mod 480 の行に持ち
   (約 10 KB)、`merge()` で取り込む。`requestFrom()` は次の要求の値 (初回 -480、以降は前回の `now`)。
@@ -230,7 +241,9 @@ MCU 版での実装は 5.1。
 ### 4.2 検出器とテクスチャ (`detector.hpp`)
 
 - 座標系と展開図の貼り方は 3.1 のとおり。側面は `SIDE_SEGMENTS` × `SIDE_DIVS` のストリップ、上下面は扇。
-- テクスチャは 1 PMT = 1 テクセルの RGB565_SWAPPED。ShapoGFX が 2 のべき乗を要求するので側面 150×51 は 256×64 に、上下面 48×48 は 64×64 に入れ、UV を使う範囲に合わせる。
+- テクスチャは 1 PMT = 1 テクセルの RGB565_SWAPPED。ShapoGFX が 2 のべき乗を要求するので、3 面を 1 枚の 256×64 に入れる:
+  側面 150×51 を左上に、上面と底面 (48×48) を側面の右の空きの x = 152、204 に置き、UV を使う範囲に合わせる
+  (間は黒の隙間。以前は上下面を別の 64×64 にしていて 48 KB、今は 32 KB。2026-11-26)。
   画素の置き場所は `Buffers::texturePixels` (毎ピクセル読むので内蔵 RAM)。
 - 色は Web 版の `displayRgb` と同じ (青〜マゼンタは紫寄りほど暗い青、未点灯は暗い灰色) に `TEXTURE_GAIN` を掛ける (1 PMT = 1 テクセルの加算合成は白飛びしやすいので暗めにする)。
 - 点灯の演出 (`updateTextures()`): 全体の明るさと「中心から直線距離の順に点いていく」前線 (ぼかし幅 `REVEAL_BLUR`) を掛けた色で全テクセルを書き直す。
@@ -257,6 +270,9 @@ MCU 版での実装は 5.1。
 - 自動回転は常に有効 (無操作 `IDLE_BEFORE_AUTO_ROTATE_SEC` で始まり `AUTO_ROTATE_RAMP_SEC` で最高速へ)。切り替えボタンは無い。
 - 入力は抽象化する: ポインタ (最大 `MAX_POINTERS` 本) とキー (`Key`: LEFT / RIGHT / UP / DOWN / A / B)。
   - 1 本のドラッグで回転 (画面の高さで 1 回転)。2 本のピンチでズーム (`setMultiTouch(false)` の機種では無効)。
+  - シングルタッチの機種 (`setMultiTouch(false)`。抵抗膜の Pico-ResTouch-LCD-2.8) のズーム: 3D の表示 (ボタン以外) を
+    ダブルタップ (`DOUBLE_TAP_SEC` 以内、`DOUBLE_TAP_MAX_DIST_PX` 以内) で拡大 (距離 × `DOUBLE_TAP_ZOOM`)、
+    動かさずに `HOLD_ZOOM_SEC` 押し続けると離すまで縮小 (`HOLD_ZOOM_RATE`)。ホスト版は `--single-touch` で同じ操作になる。
   - タップ (移動 `TAP_MAX_MOVE_PX` 以内、`TAP_MAX_SEC` 以内) でボタン。ボタンを押したまま動かしたら押下を取り消す。
   - キー: LEFT / RIGHT で回転、UP / DOWN でズーム、A で履歴を新しい順に送り最後は LIVE へ、B で WiFi 設定を開く。設定画面では十字キーでフォーカス、A で決定、B で戻る。
 
@@ -316,7 +332,7 @@ MCU 版での実装は 5.1。
   `pixelsCrc32` が前回と同じか点灯が少なければ捨てる → 準備できた `EventRecord` (推定結果は応答の `fit`) をキューへ。
   描画側はフレームごとに `pipelinePoll()` で受け取り `App::pushEvent()` にコピーして `pipelineRelease()` で返す。
   スロットは 5 つ (PSRAM。表示待ち 15 秒 / 9 秒 ≒ 2 件 + 取得中の 1 件 + 余裕)。
-- 表示待ちのキュー (端末間の同期。3.3): `pipelinePoll()` はキューの先頭が表示の時刻
+- 表示待ちのキュー (端末間の同期。3.3): 判定は機種に依存しない `tkapp::DisplaySync` (`sync.hpp`。RP2350 版と共有)。`pipelinePoll()` はキューの先頭が表示の時刻
   `timestampMs + 遅れ` (サーバ時刻) を過ぎたときだけ返す。遅れは最初のイベントを受け取った時点で 0、`QUEUE_RAMP_SEC` (1 分) かけて
   `QUEUE_DELAY_SEC` (15 秒) まで直線的に伸ばす (2026-11-25 にサーバでの推定に移したので 30 秒 / 3 分から短縮)。
   - サーバ時刻とのずれ: 応答の `serverTimeMs` とヘッダを受け取った時刻の差を、直近 10 回で「要求を送ってからヘッダが届くまで」が最も短かった取得から求める。
@@ -331,9 +347,9 @@ MCU 版での実装は 5.1。
 
 ### 5.2 メモリ (CoreS3)
 
-内蔵 RAM: テクスチャ 48 KB、Graphics3D の arena 56 KB (三角形は最大 32 KB ほど)、帯バッファ 2 × (240 × 32 × 2) B、Graphics2D の arena。
+内蔵 RAM: テクスチャ 32 KB、Graphics3D の arena 56 KB (三角形は最大 32 KB ほど)、帯バッファ 2 × (240 × 32 × 2) B、Graphics2D の arena。
 WiFi の初期化後にこれらを確保して約 47 KB 残る。
-PSRAM: App (約 56 KB)、履歴 (20 × 12 KB)、パイプラインのスロットと受信バッファ、イベントの記録 (約 10 KB)、パイプラインのタスクのスタック
+PSRAM: App (約 56 KB)、履歴 (履歴機能なしで 2 × 8 KB)、パイプラインのスロットと受信バッファ、イベントの記録 (約 10 KB)、パイプラインのタスクのスタック
 
 (`CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`。このタスクは NVS を書かない)、WiFi / lwIP / mbedTLS のバッファ (`sdkconfig.defaults`)。
 
@@ -391,7 +407,85 @@ Tab5 (360×640、PPA で 2 倍、2026-11-25):
   内蔵 DMA メモリになる。`CONFIG_ESP_HOSTED_HOST_SDIO_RX_STAGING_SLOTS=1` にし、帯バッファを 40 行にしてこれを確保できるようにした
   (2 スロットで帯 80 行だと確保に失敗して再起動を繰り返す)。
 
-## 6. 未実装・今後
+## 6. Pico SDK 版 (impl/rp2common/、Waveshare Pico-ResTouch-LCD-2.8 + Pico 2 W)
 
+2026-11-26 に実装し、実機で確認した: SWD での書き込み、表示、画面のキーボードでの WiFi の設定と接続、ズーム、リセット後の自動の再接続。
+
+実測 (2026-11-26、軌跡の表示中): 38〜39 fps (scene 4.4 ms、draw core0 14.6 ms / core1 14.7 ms、core1 待ち 1.4 ms、転送待ち 5.4 ms。スパンのピーク 100〜111/行)。
+
+### 6.1 ハードウェア
+
+- Raspberry Pi Pico 2 W (RP2350、内蔵 RAM 520 KB、PSRAM なし、Flash 4 MB、WiFi は CYW43439) を Pico-ResTouch-LCD-2.8 に載せる。
+- パネル: ST7789VW 240×320、SPI1 (SCK 10、MOSI 11、CS 9、DC 8、RST 15、BL 13)。画面の向きとレイアウトは CoreS3 と同じ。
+- タッチ: XPT2046 (抵抗膜、1 点)。パネルと SPI を共用し (MISO 12、CS 16、PENIRQ 17)、前のフレームの転送が終わってバスが空いたとき
+  (`Board::onPanelIdle()`) に 2 MHz に落として読む。生値から画面の座標への写像は texbreakout と同じ固定値 (`touch_xpt2046.cpp`)。
+- CYW43439 は Pico 2 W の基板内の GP23 / 24 / 25 / 29 を使い、ResTouch のピンと重ならない。
+- ピンはボードヘッダ `rp2common/boards/pico2_w_restouch_lcd_2_8.h` (SDK の `pico2_w.h` + `RP2COMMON_*`)。
+
+### 6.2 コアの割り当て
+
+- クロックは texbreakout と同じ 300 MHz / 1.30 V、clk_peri 150 MHz、パネルの SPI 75 MHz、Flash 100 MHz (`clocks.cpp`)。
+  CYW43 の SPI (PIO) は clk_sys の分周なので `CYW43_PIO_CLOCK_DIV_INT=4` (37.5 MHz) にする (既定の 2 は 150 MHz 用で 300 MHz では仕様を超える)。
+- 描画は ESP-IDF 版と同じ 2 コアの帯描画 (帯 32 行、上半分を core0、下半分を core1。FIFO で受け渡す)。
+- WiFi と lwIP は `pico_cyw43_arch_lwip_threadsafe_background` で、CYW43 を core1 で初期化して通信の処理 (TLS の握手の計算を含む) を
+  core1 の低優先度の割り込みで動かす。core0 から lwIP を触るときは `cyw43_arch_lwip_begin/end` で排他する。
+  握手の間は core1 の帯が遅れてフレームが一時的に遅くなるので、接続は keep-alive で使い回し (6.3)、ウォッチドッグは 8 秒にする。
+- core0 はフレームの合間に、WiFi の状態の確認 (`netPoll`)、パイプライン (`pipelinePoll`。取得の開始、届いた応答の展開)、シリアル (`consolePoll`) を回す。
+  タスクが無いので、どれも待たずに戻る。応答の展開 (数 ms) は届いたフレームで core0 が行う。
+- ShapoGFX の 3D 描画のコード (gfx3d.cpp 等、約 75 KB) は RAM に置く (`RP2_GFX3D_IN_RAM`。demo3d と同じ。16 KB の XIP キャッシュを通信のコードと取り合わない)。
+  ShapoGFX の設定は ESP32-S3 と同じ (遠近補正レベル 1、固定小数の頂点処理)。
+
+### 6.3 HTTPS (`net.cpp`)
+
+- lwIP の altcp_tls + mbedTLS 2.28 (SDK 同梱) で api.php を GET する。HTTP/1.1 の keep-alive で接続を使い回す。
+  サーバが閉じていたら (要求の前に切れていた場合を含め 1 度だけ) 新しい接続で送り直す。新しい接続はセッションチケット (サーバ対応済み) で短い握手にする。
+- 実測: サーバ (nginx) は keep-alive の接続を約 5 秒で閉じるので、9 秒ごとの取得では毎回新しい接続になる。
+  ただしセッションチケットで再開するので、接続 (DNS、TCP、TLS) は初回の完全な握手が約 390 ms、2 回目以降は約 30 ms で、描画への影響は無い。
+  取得 1 回は 0.3〜1 秒。取得ごとに `fetch: http 200, ... (connect N ms)` をログに出す。
+- 応答は自前の最小の解析: 状態行、`Content-Length`、`Transfer-Encoding: chunked`、`Connection: close`。本文は受信バッファ (48 KB) に直接入れる。タイムアウトは 15 秒。
+- 証明書は必ず検証する (`ALTCP_MBEDTLS_AUTHMODE=MBEDTLS_SSL_VERIFY_REQUIRED`)。ルートは ISRG Root X1 (現在の連鎖: YR1 → Root YR を X1 が相互署名) と X2 (`root_certs.h`)。
+  RTC が無いので有効期限は確かめない (`MBEDTLS_HAVE_TIME_DATE` なし)。
+- mbedTLS の受信のレコード長は 16 KB のまま。サーバは max_fragment_length (4 KB) に応じるが、mbedTLS 2.28 は複数のレコードに分かれたハンドシェイクを
+  受け取れず、証明書の連鎖 (現在 4079 バイト) が 4 KB を超えた時点で繋がらなくなるため使わない。そのため lwIP の受信の窓と pbuf のプールも 16 KB 以上にする (`lwipopts.h`)。
+- サーバ時刻のずれ: ESP-IDF 版と同じく「要求を送り終えてからヘッダが届くまで」が最短の標本から求める (`DisplaySync`)。keep-alive では握手を含まないので往復 1 回分になる。
+
+### 6.4 メモリ
+
+PSRAM が無いので、大きなものは静的に置く (リンク時に使用量が分かる。ヒープは mbedTLS が使う)。2026-11-26 のビルドで .data + .bss が約 429 KB
+(うち RAM に置いた 3D のコード約 100 KB)。ヒープの空きは実測で、起動後 (帯バッファ、TLS の設定、ルート証明書を確保した後) 57 KB、
+TLS の接続中が最小で 35 KB。
+
+| 用途 | 大きさ |
+|---|---|
+| App | 55 KB |
+| 3D の作業領域 | 56 KB |
+| 受信バッファ | 48 KB |
+| テクスチャ | 32 KB |
+| 帯バッファ (32 行 × 2、ヒープ) | 30 KB |
+| パイプラインのスロット (3 件) | 23 KB |
+| 履歴 (2 件) | 15 KB |
+| core1 のスタック | 16 KB |
+| Graphics2D の作業領域 × 2 | 12 KB |
+| イベントの記録 | 9.6 KB |
+| lwIP (pbuf のプール 16 個、ヒープ 8 KB) | 32 KB |
+
+- スロットは 3 件: 表示待ちは最大 2 件 (15 秒 / 9 秒) で、展開は届いたフレームで済むので取得中の分は要らない。足りなければ一番古い待ちを捨てる。
+- RAM を減らすため appcore 側で、セルを 5 bit に詰め (4.1)、3 面のテクスチャを 1 枚にした (4.2)。どちらも表示は変わらない (ホスト版の出力が一致)。
+
+### 6.5 設定とシリアル
+
+- WiFi の設定は Flash の最後のセクタに印と CRC を付けて置く (`settings_store.cpp`)。書く間は core1 を RAM 上で待たせ (割り込みも止める)、
+  core0 も割り込みを止める。書くのはフレームの最後 (画面やシリアルで設定を変えたとき)。
+- WiFi は WPA2/WPA の PSK (パスフレーズが空なら認証なし)。切れたら 3 秒後に繋ぎ直し、30 秒以上つながらなければ FAILED 表示 (再接続は続ける)。
+  静的 IP は ESP-IDF 版と同じ (マスクが空なら /24、DNS が空ならゲートウェイ)。
+- シリアルは USB CDC で、コマンドは ESP-IDF 版と同じ (`wifi`、`status`、`clear`、`help`)。`PICO_STDIO_USB_CONNECTION_WITHOUT_DTR` で DTR を上げない端末にも出す。
+  `tools/wifi_setup.py` と `read_serial.py` はそのまま使えるが、RTS ではリセットされない。
+- `RP2_STDIO_RTT=ON` でログを SWD (SEGGER RTT) に出せる (その場合シリアルのコマンドは使えない)。OpenOCD で
+  `rtt setup <_SEGGER_RTT のアドレス> 0x100 "SEGGER RTT"`、`rtt start`、`rtt server start 19021 0` として TCP で読む。
+  OpenOCD の `reset run` の後に USB ブート (BOOTSEL) に入ってしまうことがあったので、リセットは `flash_swd.sh` (`program ... reset`) で行う。HardFault と固まり (ウォッチドッグ) は次の起動時にログに出る (`diag.cpp`)。
+
+## 7. 未実装・今後
+
+- Pico-ResTouch-LCD-2.8 版: 静的 IP、設定の消去 (`clear`)、長時間の連続動作は未確認。
 - core1 が空いているときに 2 コンテキストで描く、または円筒専用の描画で 30 fps を狙う。
 - タッチ操作と設定画面の実機での確認 (ホスト版と実機のログでしか確認していない)。

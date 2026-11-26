@@ -12,6 +12,7 @@ set(TKAPP_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cbor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/eventlog.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/sync.cpp
 )
 set(TKAPP_CORE_SOURCES ${TKAPP_CORE_SOURCES} PARENT_SCOPE)
 

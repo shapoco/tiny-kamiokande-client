@@ -3,7 +3,7 @@
 //
 //   tkapp_host [--size WxH] [--fps N] [--strip ROWS] [--interval SEC] [--out DIR]
 //              [--snap t1,t2,...] [--seconds T] [--drag X0,Y0,X1,Y1,T0,T1] [--key NAME,T]
-//              [--tap X,Y,T] [--settings] [--bench] [--viewers N] file.cbor...
+//              [--tap X,Y,T] [--settings] [--bench] [--viewers N] [--single-touch] file.cbor...
 //
 //   --interval  ファイルを流し込む間隔 (既定 15 秒。0 なら全部を t=0 で)
 //   --snap      PNG を書く時刻。--out のディレクトリに frame_<秒>.png
@@ -12,6 +12,8 @@
 //   --key       時刻 T にキー (left/right/up/down/a/b) を押して 0.3 秒後に離す
 //   --settings  起動時に WiFi 設定画面を開く
 //   --bench     1 フレームの描画時間を測って表示する
+//   --single-touch  シングルタッチの機種と同じ操作にする (ダブルタップで拡大、長押しで縮小。
+//               ダブルタップは --tap を 2 回、長押しは同じ位置への --drag で試す)
 //   --viewers   左下の接続数をこの値で表示する (既定は最後に読んだ応答の clients。無ければ出さない)
 //
 // 応答にイベントの記録 (api.php?fmt=bin&log=-480 の log) があれば、取り込んで最下部に描く
@@ -187,7 +189,7 @@ int main(int argc, char **argv) {
   std::vector<Tap> taps;
   std::vector<KeyEvent> keys;
   std::vector<const char *> files;
-  bool bench = false, settings = false;
+  bool bench = false, settings = false, singleTouch = false;
   int viewersOpt = -1, lastClients = -1;
   for (int i = 1; i < argc; i++) {
     const char *a = argv[i];
@@ -205,6 +207,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(a, "--bench")) bench = true;
     else if (!strcmp(a, "--viewers")) viewersOpt = atoi(next());
     else if (!strcmp(a, "--settings")) settings = true;
+    else if (!strcmp(a, "--single-touch")) singleTouch = true;
     else if (!strcmp(a, "--snap")) {
       const char *s = next();
       while (*s) {
@@ -248,6 +251,7 @@ int main(int argc, char **argv) {
   buffers.history = g_history;
   buffers.historyCapacity = HISTORY_MAX;
   buffers.texturePixels = g_texPixels;
+  g_app.setMultiTouch(!singleTouch);
   if (!g_app.init(w, h, buffers, &platform, g_arena, sizeof g_arena)) {
     std::fprintf(stderr, "app init failed\n");
     return 1;

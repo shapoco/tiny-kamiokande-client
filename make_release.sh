@@ -1,6 +1,7 @@
 #!/bin/bash
 # リリース用のファームをビルドして releases/ に zip を作る (SPEC.md 1 章「リリース」)。
-# 環境変数: IDF_ROOT (ESP-IDF 5.5 のディレクトリ)、SHAPOGFX_PATH (ShapoGFX のクローン)
+# 環境変数: IDF_ROOT (ESP-IDF 5.5 のディレクトリ)、SHAPOGFX_PATH (ShapoGFX のクローン)、
+#           PICO_SDK_PATH (Pico SDK 2.2、既定 ~/pico/pico-sdk)
 
 set -eu
 cd "$(dirname "$0")"
@@ -45,16 +46,35 @@ function build_esp {
   popd > /dev/null
 }
 
+# Pico SDK 版: build-release/ にクリーンビルドし (TKAPP_DEMO などの手元の指定は使わない)、.uf2 を置く
+function build_pico {
+  local board=$1
+  local board_dir="${dest_dir}/${board}"
+  echo "Building ${board}"
+  mkdir -p "${board_dir}"
+  cp -p assets/release/${board}/* "${board_dir}/"
+  pushd "impl/${board}" > /dev/null
+    rm -rf build-release
+    BUILD_DIR=build-release ./build.sh > "build-release.log" 2>&1 \
+      || { echo "Build failed: impl/${board}/build-release.log" >&2; exit 1; }
+    cp build-release/tiny_kamiokande.uf2 "${board_dir}/tiny_kamiokande_${board}.uf2"
+  popd > /dev/null
+}
+
 build_esp m5cores3
 build_esp m5tab5
+build_pico pico_restouch_lcd_2_8
 
 {
   echo "version: ${VERSION}"
   echo "tiny-kamiokande-client: $(git rev-parse --short HEAD)$(git diff --quiet HEAD || echo ' (dirty)')"
   echo "ShapoGFX: $(git -C "${SHAPOGFX_PATH}" rev-parse --short HEAD 2> /dev/null || echo unknown)"
+  echo "Pico SDK: $(git -C "${PICO_SDK_PATH:-${HOME}/pico/pico-sdk}" describe --tags 2> /dev/null || echo unknown)"
   echo
   echo "Flash: m5cores3/upload.sh [PORT] [BAUD]   # CoreS3"
   echo "       m5tab5/upload.sh [PORT] [BAUD]     # Tab5"
+  echo "       pico_restouch_lcd_2_8/upload.sh        # Pico-ResTouch-LCD-2.8 + Pico 2 W (picotool,"
+  echo "                                              # or copy the .uf2 to the RP2350 drive in BOOTSEL mode)"
 } > "${dest_dir}/BUILD_INFO.txt"
 
 cp README.md README.ja.md "${dest_dir}/"

@@ -140,6 +140,8 @@ void App::pointerDown(int id, int x, int y) {
   p.sec = 0;
   p.moved = false;
   p.button = -1;
+  p.secondTap = false;
+  p.holding = false;
   interacted_ = true;
   if (screen_ != Screen::MAIN) {
     uiPointerDown(x, y);
@@ -147,6 +149,10 @@ void App::pointerDown(int id, int x, int y) {
   }
   p.button = hitButton(x, y);
   pressedButton_ = p.button;
+  if (!multiTouch_ && p.button < 0 && timeSec_ - lastTapSec_ <= DOUBLE_TAP_SEC &&
+      abs(x - lastTapX_) <= DOUBLE_TAP_MAX_DIST_PX && abs(y - lastTapY_) <= DOUBLE_TAP_MAX_DIST_PX) {
+    p.secondTap = true;
+  }
   const Pointer &o = ptr_[id ^ 1];
   if (o.down && o.button < 0 && p.button < 0) {
     const int dx = o.x - x, dy = o.y - y;
@@ -194,6 +200,17 @@ void App::pointerUp(int id) {
     return;
   }
   if (p.button >= 0 && !p.moved && p.sec < TAP_MAX_SEC && hitButton(p.x, p.y) == p.button) buttonAction(p.button);
+  // シングルタッチのズーム: 3D の表示のダブルタップで拡大 (長押しの縮小は advance())
+  if (!multiTouch_ && p.button < 0 && !p.moved && !p.holding && p.sec < TAP_MAX_SEC) {
+    if (p.secondTap) {
+      cam_.distT = clampf(cam_.distT * DOUBLE_TAP_ZOOM, CAMERA_MIN_DIST, CAMERA_MAX_DIST);
+      lastTapSec_ = -1e9f;  // 3 回目は新しい 1 回目
+    } else {
+      lastTapSec_ = timeSec_;
+      lastTapX_ = p.x;
+      lastTapY_ = p.y;
+    }
+  }
   p.button = -1;
   pressedButton_ = -1;
   pinchDist0_ = 0;
@@ -309,6 +326,11 @@ void App::advance(float dt) {
   for (auto &p : ptr_) {
     if (p.down) p.sec += dt;
     if (p.down && p.button < 0) pointerActive = true;
+    // シングルタッチのズーム: 3D の表示を動かさずに押し続けると縮小
+    if (!multiTouch_ && screen_ == Screen::MAIN && p.down && p.button < 0 && !p.moved && p.sec >= HOLD_ZOOM_SEC) {
+      p.holding = true;
+      cam_.distT = clampf(cam_.distT * expf(HOLD_ZOOM_RATE * dt), CAMERA_MIN_DIST, CAMERA_MAX_DIST);
+    }
   }
   const bool rotating = keyHeld_[(int)Key::LEFT] || keyHeld_[(int)Key::RIGHT] || keyHeld_[(int)Key::UP] ||
                         keyHeld_[(int)Key::DOWN];

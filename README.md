@@ -17,17 +17,22 @@ The display is not guaranteed to be scientifically accurate (both the tracks and
 
 - M5Stack CoreS3 (ESP32-S3)
 - M5Stack Tab5 (ESP32-P4 + ESP32-C6)
+- Waveshare Pico-ResTouch-LCD-2.8 + Raspberry Pi Pico 2 W (RP2350)
 - Host build (PC; renders frames from saved responses to PNG for checking)
 
 ## Prebuilt binaries
 
 Prebuilt firmware can be downloaded from [Releases](https://github.com/shapoco/tiny-kamiokande-client/releases).
-Extract the zip and flash with `upload.sh` in the directory for your device ([esptool](https://github.com/espressif/esptool) is required).
+Extract the zip and flash with `upload.sh` in the directory for your device ([esptool](https://github.com/espressif/esptool) is required for M5Stack,
+[picotool](https://github.com/raspberrypi/picotool) for the Pico).
 
 ```sh
 m5cores3/upload.sh /dev/ttyACM0   # CoreS3
 m5tab5/upload.sh /dev/ttyACM0     # Tab5
+pico_restouch_lcd_2_8/upload.sh   # Pico-ResTouch-LCD-2.8 + Pico 2 W
 ```
+
+Instead of picotool, you can also flash the Pico by holding the BOOTSEL button while plugging it in and copying the `.uf2` to the drive that appears.
 
 The Tab5 needs its C6 updated after flashing (see below).
 
@@ -35,6 +40,7 @@ The Tab5 needs its C6 updated after flashing (see below).
 
 - [ESP-IDF](https://github.com/espressif/esp-idf) 5.5 (environment variable `IDF_ROOT`, default `~/esp/5.5/esp-idf`)
 - A clone of [ShapoGFX](https://github.com/shapoco/shapo-gfx) (environment variable `SHAPOGFX_PATH`, default `~/shapo-gfx`)
+- For the Pico: the [Pico SDK](https://github.com/raspberrypi/pico-sdk) 2.2 (environment variable `PICO_SDK_PATH`, default `~/pico/pico-sdk`), the Arm GNU Toolchain and picotool
 
 ## Build and flash
 
@@ -42,6 +48,8 @@ The Tab5 needs its C6 updated after flashing (see below).
 impl/m5cores3/run.sh /dev/ttyACM0   # CoreS3 (adjust the port to your environment)
 impl/m5tab5/run.sh /dev/ttyACM0     # Tab5
 impl/m5cores3/build.sh -DTKAPP_DEMO=1   # Demo mode: shows the embedded samples without networking
+impl/pico_restouch_lcd_2_8/build.sh     # Pico-ResTouch-LCD-2.8 + Pico 2 W (-DTKAPP_DEMO=ON for the demo mode)
+impl/pico_restouch_lcd_2_8/flash.sh     # Flash with picotool
 ```
 
 On the Tab5, HTTPS does not work with the factory firmware of the ESP32-C6, so the C6 must be updated first.
@@ -50,7 +58,9 @@ The Tab5 firmware embeds the C6 update image; run the `c6ota` command on the USB
 ## WiFi settings
 
 Tap the WiFi icon at the top right of the screen to open the settings screen. You can also configure it with the `wifi` command on the USB serial console.
-The settings are stored in the device's NVS.
+The settings are stored in the device's NVS (on the Pico, in the last sector of the flash).
+
+The Pico-ResTouch-LCD-2.8 has a single-touch screen, so instead of pinching, double-tap the detector to zoom in and hold it to zoom out.
 
 ## Documentation
 

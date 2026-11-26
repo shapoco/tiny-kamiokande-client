@@ -14,6 +14,7 @@ idf_component_register(
         "${TKAPP_APPCORE}/src/detector.cpp"
         "${TKAPP_APPCORE}/src/cbor.cpp"
         "${TKAPP_APPCORE}/src/eventlog.cpp"
+        "${TKAPP_APPCORE}/src/sync.cpp"
     INCLUDE_DIRS "${TKAPP_APPCORE}/include"
     REQUIRES ${SHAPOGFX_COMPONENT}
 )

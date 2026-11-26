@@ -130,7 +130,7 @@ void App::beginTransition(HistoryEntry *entry, bool instant) {
   if (!entry || !entry->rec) return;
   displayedId_ = entry->id;
   shownSec_ = 0;
-  pendingCells_ = entry->rec->data.cells;
+  pendingCells_ = &entry->rec->data.cells;
   hasPending_ = true;
   introActive_ = false;
   headOpacity_ = 0;

@@ -49,7 +49,7 @@ g3::Vertex vtx(float x, float y, float z, float u, float v, g2::Color c = g3::VE
 void App::buildDetectorGeometry() {
   // 側面: 1 本のストリップ。角度 θ の列のテクスチャ u は (1 - θ/2π) × 150/256 (SPEC.md 3.1)
   // 頂点は行 (高さ) ごとに並べ、隣り合う 2 行で 1 本のストリップにする
-  const float uScale = (float)SIDE_COLS / SIDE_TEX_W, vBottom = (float)SIDE_ROWS / SIDE_TEX_H;
+  const float uScale = (float)SIDE_COLS / FACE_TEX_W, vBottom = (float)SIDE_ROWS / FACE_TEX_H;
   for (int d = 0; d <= SIDE_DIVS; d++) {
     const float t = (float)d / SIDE_DIVS;
     const float y = HEIGHT / 2 - HEIGHT * t;
@@ -66,15 +66,16 @@ void App::buildDetectorGeometry() {
       sideIdx_[d][2 * s + 1] = (uint16_t)((d + 1) * (SIDE_SEGMENTS + 1) + s);
     }
   }
-  // 上面・底面: 外接正方形 (三角形 2 枚)。テクスチャは 48/64 まで使い、円の外は黒
-  const float capScale = (float)CAP_COLS / CAP_TEX_W;
+  // 上面・底面: 外接正方形 (三角形 2 枚)。テクスチャは側面の右の 48×48 の領域 (config.hpp) で、円の外は黒
+  const float capScaleU = (float)CAP_COLS / FACE_TEX_W, capScaleV = (float)CAP_COLS / FACE_TEX_H;
   for (int f = 0; f < 2; f++) {
     const bool top = f == 0;
     const float y = top ? HEIGHT / 2 : -HEIGHT / 2;
+    const float u0 = (float)(top ? CAP_TOP_TEX_X : CAP_BOTTOM_TEX_X) / FACE_TEX_W;
     const float xs[4] = {-RADIUS, RADIUS, RADIUS, -RADIUS}, zs[4] = {RADIUS, RADIUS, -RADIUS, -RADIUS};
     for (int i = 0; i < 4; i++) {
-      const float u = (xs[i] / RADIUS + 1) * 0.5f * capScale;
-      const float v = (top ? (1 - zs[i] / RADIUS) : (1 + zs[i] / RADIUS)) * 0.5f * capScale;
+      const float u = u0 + (xs[i] / RADIUS + 1) * 0.5f * capScaleU;
+      const float v = (top ? (1 - zs[i] / RADIUS) : (1 + zs[i] / RADIUS)) * 0.5f * capScaleV;
       capVerts_[f][i] = vtx(xs[i], y, zs[i], u, v);
     }
   }
@@ -166,11 +167,10 @@ void App::makeSpriteTextures() {
 void App::initScene() {
   buildDetectorGeometry();
   makeSpriteTextures();
-  const g2::Texture *faceTex[3] = {&detector_.sideTexture(), &detector_.topTexture(), &detector_.bottomTexture()};
   for (int i = 0; i < 3; i++) {
     matFace_[i] = g3::Material{};
     matFace_[i].diffuse = {1, 1, 1, 1};
-    matFace_[i].texture = faceTex[i];
+    matFace_[i].texture = &detector_.texture();
     matFace_[i].blendMode = g2::BlendMode::ADD;
     matFace_[i].flags = g3::MaterialFlags::TEXTURE | g3::MaterialFlags::DOUBLE_SIDED;
   }
